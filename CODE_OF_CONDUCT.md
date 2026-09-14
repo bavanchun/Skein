@@ -60,7 +60,7 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement by opening an
-issue at https://github.com/bavanchun/ariadnev-skein/issues or by contacting
+issue at https://github.com/bavanchun/Skein/issues or by contacting
 [@bavanchun](https://github.com/bavanchun) directly on GitHub.
 All complaints will be reviewed and investigated promptly and fairly.
 

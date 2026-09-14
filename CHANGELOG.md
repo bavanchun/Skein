@@ -116,13 +116,13 @@ macOS ties Accessibility and Screen Recording to an app's bundle identifier, so 
 
 Releases before this fork are documented in [jordanbaird/Ice](https://github.com/jordanbaird/Ice/releases).
 
-[Unreleased]: https://github.com/bavanchun/ariadnev-skein/compare/v1.4.0...HEAD
-[1.4.0]: https://github.com/bavanchun/ariadnev-skein/compare/v1.3.0...v1.4.0
-[1.3.0]: https://github.com/bavanchun/ariadnev-skein/compare/v1.2.2...v1.3.0
-[1.2.2]: https://github.com/bavanchun/ariadnev-skein/compare/v1.2.1...v1.2.2
-[1.2.1]: https://github.com/bavanchun/ariadnev-skein/compare/v1.2.0...v1.2.1
-[1.2.0]: https://github.com/bavanchun/ariadnev-skein/compare/v1.1.0...v1.2.0
-[1.1.0]: https://github.com/bavanchun/ariadnev-skein/compare/v1.0.1...v1.1.0
-[1.0.1]: https://github.com/bavanchun/ariadnev-skein/compare/v1.0.0...v1.0.1
-[1.0.0]: https://github.com/bavanchun/ariadnev-skein/compare/v0.11.12...v1.0.0
-[0.11.12]: https://github.com/bavanchun/ariadnev-skein/releases/tag/v0.11.12
+[Unreleased]: https://github.com/bavanchun/Skein/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/bavanchun/Skein/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/bavanchun/Skein/compare/v1.2.2...v1.3.0
+[1.2.2]: https://github.com/bavanchun/Skein/compare/v1.2.1...v1.2.2
+[1.2.1]: https://github.com/bavanchun/Skein/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/bavanchun/Skein/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/bavanchun/Skein/compare/v1.0.1...v1.1.0
+[1.0.1]: https://github.com/bavanchun/Skein/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/bavanchun/Skein/compare/v0.11.12...v1.0.0
+[0.11.12]: https://github.com/bavanchun/Skein/releases/tag/v0.11.12

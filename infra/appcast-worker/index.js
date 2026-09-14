@@ -11,7 +11,7 @@
  * and the appcast and its zips are served straight from there.
  */
 
-const RELEASE_BASE = "https://github.com/bavanchun/ariadnev-skein/releases/latest/download";
+const RELEASE_BASE = "https://github.com/bavanchun/Skein/releases/latest/download";
 
 export default {
   async fetch(request) {
@@ -46,6 +46,6 @@ export default {
     }
 
     // Anything else belongs to the repository, not to this worker.
-    return Response.redirect("https://github.com/bavanchun/ariadnev-skein", 302);
+    return Response.redirect("https://github.com/bavanchun/Skein", 302);
   },
 };

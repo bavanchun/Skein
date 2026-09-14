@@ -11,14 +11,14 @@ It is part of the [Ariadnev](https://ariadnev.com) ecosystem.
 
 ![Banner](https://github.com/user-attachments/assets/4423085c-4e4b-4f3d-ad0f-90a217c03470)
 
-[![Download](https://img.shields.io/badge/download-latest-brightgreen?style=flat-square)](https://github.com/bavanchun/ariadnev-skein/releases/latest)
+[![Download](https://img.shields.io/badge/download-latest-brightgreen?style=flat-square)](https://github.com/bavanchun/Skein/releases/latest)
 ![Platform](https://img.shields.io/badge/platform-macOS-blue?style=flat-square)
 ![Requirements](https://img.shields.io/badge/requirements-macOS%2014%2B-fa4e49?style=flat-square)
-[![License](https://img.shields.io/github/license/bavanchun/ariadnev-skein?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/github/license/bavanchun/Skein?style=flat-square)](LICENSE)
 
 ## Install
 
-Download the `Skein-<version>.zip` file from the [latest release](https://github.com/bavanchun/ariadnev-skein/releases/latest) and move the unzipped app into your `Applications` folder.
+Download the `Skein-<version>.zip` file from the [latest release](https://github.com/bavanchun/Skein/releases/latest) and move the unzipped app into your `Applications` folder.
 
 Skein is signed with a personal development certificate rather than a Developer ID, so on first launch macOS may require you to allow it explicitly in System Settings → Privacy & Security.
 

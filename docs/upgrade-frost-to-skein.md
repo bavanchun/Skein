@@ -11,7 +11,7 @@ Follow the steps in order.
 ## 1. Download Skein
 
 - Get `Skein-<version>.zip` from
-  <https://github.com/bavanchun/ariadnev-skein/releases/latest>. Take whatever
+  <https://github.com/bavanchun/Skein/releases/latest>. Take whatever
   the latest release offers; there is no reason to pin an older one.
 - Double-click to unzip; you'll get `Skein.app`.
 
