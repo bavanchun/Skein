@@ -6,6 +6,14 @@
 import Foundation
 
 enum Constants {
+    #if DEBUG
+    static let isDevelopmentBuild = true
+    #else
+    static let isDevelopmentBuild = false
+    #endif
+
+    static let displayName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Skein"
+
     // swiftlint:disable force_unwrapping
     /// The version string in the app's bundle.
     static let versionString = Bundle.main.versionString!
@@ -27,8 +35,8 @@ enum Constants {
     static let permissionsWindowID = "PermissionsWindow"
 
     /// The title for the settings window.
-    static let settingsWindowTitle = "Skein"
+    static let settingsWindowTitle = displayName
 
     /// The title for the permissions window.
-    static let permissionsWindowTitle = "Permissions"
+    static let permissionsWindowTitle = isDevelopmentBuild ? "Skein Dev Permissions" : "Permissions"
 }

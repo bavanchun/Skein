@@ -7,7 +7,11 @@ import CoreGraphics
 import Foundation
 
 enum MenuBarItemService {
+    #if DEBUG
+    static let name = "com.ariadnev.Skein.dev.MenuBarItemService"
+    #else
     static let name = "com.ariadnev.Skein.MenuBarItemService"
+    #endif
 }
 
 extension MenuBarItemService {
