@@ -1,6 +1,6 @@
 # Skein Release Guide
 
-Personal-build release workflow for the `bavanchun/ariadnev-skein` fork. Targets macOS 14+, signed with a free Personal Apple Developer account (no notarization, runs locally only).
+Personal-build release workflow for the `bavanchun/Skein` fork. Targets macOS 14+, signed with a free Personal Apple Developer account (no notarization, runs locally only).
 
 This document owns release mechanics. The surrounding process rules — branching, pull requests, and the version approval gate — live in [`DEVELOPMENT_WORKFLOW.md`](DEVELOPMENT_WORKFLOW.md).
 
@@ -250,7 +250,7 @@ Drop the signature + length from Step 4 into the enclosure:
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <title>Skein</title>
-    <link>https://github.com/bavanchun/ariadnev-skein/releases</link>
+    <link>https://github.com/bavanchun/Skein/releases</link>
     <description>Personal fork of Ice</description>
     <language>en</language>
     <item>
@@ -260,7 +260,7 @@ Drop the signature + length from Step 4 into the enclosure:
       <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
       <sparkle:edSignature>INSERT_SIGNATURE_HERE</sparkle:edSignature>
       <enclosure
-        url="https://github.com/bavanchun/ariadnev-skein/releases/download/v${VERSION}/Skein-${VERSION}.zip"
+        url="https://github.com/bavanchun/Skein/releases/download/v${VERSION}/Skein-${VERSION}.zip"
         sparkle:os="macos"
         length="INSERT_LENGTH_HERE"
         type="application/octet-stream"/>
@@ -282,7 +282,7 @@ git push origin v${VERSION}
 gh release create v${VERSION} \
   ".release-output/Skein-${VERSION}.zip" \
   ".release-output/appcast.xml" \
-  --repo bavanchun/ariadnev-skein \
+  --repo bavanchun/Skein \
   --title "${VERSION}" \
   --notes "Personal build of Skein ${VERSION} (build ${BUILD})."
 ```
