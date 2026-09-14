@@ -68,7 +68,7 @@ struct AboutSettingsPane: View {
                 if let nsImage = NSImage(named: NSImage.applicationIconName) {
                     Image(nsImage: nsImage)
                         .resizable()
-                        .aspectRatio(contentMode: .fit)
+                        .scaledToFit()
                         .frame(width: 225)
                 }
 
@@ -81,6 +81,12 @@ struct AboutSettingsPane: View {
                         .font(.system(size: 18))
                         .foregroundStyle(.secondary)
 
+                    if Constants.isDevelopmentBuild {
+                        Text("Development build")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Text(Constants.copyrightString)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.tertiary)
@@ -91,6 +97,12 @@ struct AboutSettingsPane: View {
 
     @ViewBuilder
     private var updatesSection: some View {
+        #if DEBUG
+        SkeinSection(options: .plain) {
+            Text("Automatic updates are disabled in Skein Dev.")
+                .foregroundStyle(.secondary)
+        }
+        #else
         SkeinSection(options: .hasDividers) {
             automaticallyCheckForUpdates
             automaticallyDownloadUpdates
@@ -99,6 +111,7 @@ struct AboutSettingsPane: View {
             }
         }
         .frame(maxWidth: 600)
+        #endif
     }
 
     @ViewBuilder

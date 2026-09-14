@@ -120,6 +120,7 @@ extension MigrationManager {
     /// upgrading. The old domain is left in place so downgrading still works.
     private func migrateDefaultsDomain2_0_0() throws {
         guard
+            !Constants.isDevelopmentBuild,
             let frostDefaults = UserDefaults.standard
                 .persistentDomain(forName: MigrationManager.frostDefaultsDomain)
         else {

@@ -3,11 +3,13 @@
 //  Skein
 //
 
+import LaunchAtLogin
 import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var appState: AppState?
+    private let launchAnimation = LaunchAnimationController()
 
     // MARK: NSApplicationDelegate Methods
 
@@ -47,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard !appState.isPreview else {
                 return
             }
+            self.showLaunchAnimation(isLoginLaunch: LaunchAtLogin.wasLaunchedAtLogin)
             // If we have the required permissions, set up the shared app state.
             // Otherwise, open the permissions window.
             switch appState.permissionsManager.permissionsState {
@@ -69,7 +72,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard Constants.isDevelopmentBuild else {
+            return true
+        }
+        showLaunchAnimation(isLoginLaunch: false, allowReplay: true)
+        return true
+    }
+
     // MARK: Other Methods
+
+    private func showLaunchAnimation(isLoginLaunch: Bool, allowReplay: Bool = false) {
+        guard let appState else {
+            return
+        }
+        launchAnimation.showIfNeeded(
+            isLoginLaunch: isLoginLaunch,
+            isPreview: appState.isPreview,
+            allowReplay: allowReplay,
+            menuBarDestination: { [weak appState] in
+                guard
+                    let manager = appState?.menuBarManager,
+                    !manager.isMenuBarHiddenBySystem,
+                    !manager.isMenuBarHiddenBySystemUserDefaults,
+                    let control = manager.section(withName: .visible)?.controlItem,
+                    control.isVisible, control.isAddedToMenuBar,
+                    let window = control.window, window.isVisible
+                else {
+                    return nil
+                }
+                return window.frame
+            }
+        )
+    }
 
     /// Assigns the app state to the delegate.
     func assignAppState(_ appState: AppState) {
@@ -82,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Opens the settings window and activates the app.
     @objc func openSettingsWindow() {
+        launchAnimation.dismiss()
         guard let appState else {
             Logger.appDelegate.error("Failed to open settings window")
             return

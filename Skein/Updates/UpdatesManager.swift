@@ -20,7 +20,7 @@ final class UpdatesManager: NSObject, ObservableObject {
 
     /// The underlying updater controller.
     private(set) lazy var updaterController = SPUStandardUpdaterController(
-        startingUpdater: true,
+        startingUpdater: !Constants.isDevelopmentBuild,
         updaterDelegate: self,
         userDriverDelegate: self
     )
@@ -33,9 +33,12 @@ final class UpdatesManager: NSObject, ObservableObject {
     /// A Boolean value that indicates whether to automatically check for updates.
     var automaticallyChecksForUpdates: Bool {
         get {
-            updater.automaticallyChecksForUpdates
+            !Constants.isDevelopmentBuild && updater.automaticallyChecksForUpdates
         }
         set {
+            guard !Constants.isDevelopmentBuild else {
+                return
+            }
             objectWillChange.send()
             updater.automaticallyChecksForUpdates = newValue
         }
@@ -44,9 +47,12 @@ final class UpdatesManager: NSObject, ObservableObject {
     /// A Boolean value that indicates whether to automatically download updates.
     var automaticallyDownloadsUpdates: Bool {
         get {
-            updater.automaticallyDownloadsUpdates
+            !Constants.isDevelopmentBuild && updater.automaticallyDownloadsUpdates
         }
         set {
+            guard !Constants.isDevelopmentBuild else {
+                return
+            }
             objectWillChange.send()
             updater.automaticallyDownloadsUpdates = newValue
         }
@@ -60,6 +66,9 @@ final class UpdatesManager: NSObject, ObservableObject {
 
     /// Sets up the manager.
     func performSetup() {
+        guard !Constants.isDevelopmentBuild else {
+            return
+        }
         _ = updaterController
         configureCancellables()
     }
