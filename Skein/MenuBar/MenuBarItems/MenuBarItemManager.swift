@@ -111,6 +111,35 @@ final class MenuBarItemManager: ObservableObject {
 
     /// Refreshes the accessibility snapshot off the main thread.
     func refreshAccessibilitySnapshot() async {
+        // Control item frames can only be read on the main actor, and the
+        // enumeration needs them in Accessibility (top-left origin) coordinates.
+        if
+            let sections = appState?.menuBarManager.sections,
+            let primaryHeight = NSScreen.screens.first?.frame.height
+        {
+            var frames = [ControlItem.Identifier: CGRect]()
+            for section in sections {
+                guard
+                    let frame = section.controlItem.windowFrame,
+                    frame.width > 0,
+                    frame.height > 0
+                else {
+                    continue
+                }
+                let identifier: ControlItem.Identifier = switch section.name {
+                case .visible: .skeinIcon
+                case .hidden: .hidden
+                case .alwaysHidden: .alwaysHidden
+                }
+                frames[identifier] = CGRect(
+                    x: frame.minX,
+                    y: primaryHeight - frame.maxY,
+                    width: frame.width,
+                    height: frame.height
+                )
+            }
+            AccessibilityMenuBarItems.updateControlItemFrames(frames)
+        }
         let items = await Task.detached { AccessibilityMenuBarItems.current() }.value
         accessibilitySnapshot = items
     }
@@ -719,7 +748,6 @@ extension MenuBarItemManager {
     }
 
     /// Returns the end point for moving an item to the given destination.
-
     ///
     /// - Parameter destination: The destination to return the end point for.
     private func getEndPoint(for destination: MoveDestination) throws -> CGPoint {
@@ -1446,7 +1474,6 @@ extension MenuBarItemManager {
         }
 
         guard
-
             let appState,
             let screen = NSScreen.main,
             let applicationMenuFrame = appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID)
@@ -1785,7 +1812,6 @@ private extension CGEvent {
         let windowID = Int64(itemWindowID)
 
         event.setIntegerValueField(.eventTargetUnixProcessID, value: targetPID)
-
         event.setIntegerValueField(.eventSourceUserData, value: userData)
         event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: windowID)
         event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: windowID)

@@ -13,8 +13,18 @@ enum AccessibilityMenuBarItems {
     private static var hasLoggedUnreadableTable = false
     private static var hasLoggedUnidentifiableSkein = false
 
-    /// Control item frames for fallback matching when the layout table is unreadable.
-    static var controlItemFrames = [ControlItem.Identifier: CGRect]()
+    /// Control item frames in Accessibility coordinates, for matching Skein's own
+    /// items when the layout table is unreadable. Guarded by `lock`.
+    private static var controlItemFrames = [ControlItem.Identifier: CGRect]()
+
+    /// Replaces the control item frames used when the layout table is unreadable.
+    ///
+    /// - Parameter frames: Frames in Accessibility (top-left origin) coordinates.
+    static func updateControlItemFrames(_ frames: [ControlItem.Identifier: CGRect]) {
+        lock.lock()
+        controlItemFrames = frames
+        lock.unlock()
+    }
 
     /// Returns the current menu bar items enumerated via Accessibility.
     ///
@@ -56,7 +66,6 @@ enum AccessibilityMenuBarItems {
             }
             let extrasBar = unsafeDowncast(extrasBarValue, to: AXUIElement.self)
             let children = children(of: extrasBar).filter {
-
                 role(of: $0) == (kAXMenuBarItemRole as String)
             }
             guard !children.isEmpty else {

@@ -31,13 +31,16 @@ struct MenuBarItem {
         let isGroupedIdentity: Bool
 
         static func == (lhs: AccessibilityBacking, rhs: AccessibilityBacking) -> Bool {
-            if
-                let lhsKey = lhs.tableKey,
-                let rhsKey = rhs.tableKey
-            {
+            switch (lhs.tableKey, rhs.tableKey) {
+            case let (lhsKey?, rhsKey?):
                 return lhsKey == rhsKey
+            case (nil, nil):
+                return lhs.pid == rhs.pid && lhs.frame == rhs.frame
+            default:
+                // A keyed and an unkeyed item are never equal, which keeps equality
+                // consistent with the hash below.
+                return false
             }
-            return lhs.pid == rhs.pid && lhs.frame == rhs.frame
         }
 
         func hash(into hasher: inout Hasher) {
@@ -108,7 +111,6 @@ struct MenuBarItem {
         case .window(let window):
             return window.isOnScreen
         case .accessibility(let backing):
-
             guard
                 backing.frame.width > 0,
                 backing.frame.height > 0,
@@ -168,7 +170,6 @@ struct MenuBarItem {
     }
 
     /// A name associated with the item that is suited for display to
-
     /// the user.
     var displayName: String {
         var fallback: String { "Unknown" }
@@ -259,7 +260,6 @@ struct MenuBarItem {
     }
 
     /// Creates a menu bar item.
-
     ///
     /// The parameters passed into this initializer are verified during the menu
     /// bar item's creation. If `itemWindow` does not represent a menu bar item,
@@ -467,7 +467,6 @@ extension MenuBarItem: Hashable {
 }
 
 // MARK: MenuBarItemInfo Unchecked Item Window Initializer
-
 private extension MenuBarItemInfo {
     /// Creates a simplified item from the given window.
     ///

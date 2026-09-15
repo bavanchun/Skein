@@ -128,7 +128,6 @@ final class MenuBarItemImageCache: ObservableObject {
             else {
                 continue
             }
-
             itemInfos[windowID] = item.info
             itemFrames[windowID] = itemFrame
             windowIDs.append(windowID)
