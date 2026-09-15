@@ -272,8 +272,9 @@ enum DiagnosticsMenu {
         while Date() < deadline {
             try? await Task.sleep(for: .milliseconds(500))
             let agents = NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleIdentifier)
-            if let agent = agents.first(where: { !oldPIDs.contains($0.processIdentifier) }),
-               containsIdentifier(clockIdentifier, in: AXUIElementCreateApplication(agent.processIdentifier), depth: 5)
+            if
+                let agent = agents.first(where: { !oldPIDs.contains($0.processIdentifier) }),
+                containsIdentifier(clockIdentifier, in: AXUIElementCreateApplication(agent.processIdentifier), depth: 5)
             {
                 return true
             }
