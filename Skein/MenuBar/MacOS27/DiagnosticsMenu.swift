@@ -38,7 +38,11 @@ enum DiagnosticsMenu {
     /// On macOS 27 the Skein icon can be dropped from the menu bar, which makes the
     /// menu unreachable; this lets the same actions run from a script instead.
     /// Post `<bundle id>.diagnostics` with the action title as the object.
+    /// Enable with `defaults write com.ariadnev.Skein.dev DiagnosticsRemoteTrigger -bool true` and relaunch.
     static func installRemoteTrigger() {
+        guard Defaults.bool(forKey: .diagnosticsRemoteTrigger) else {
+            return
+        }
         // Setup can run more than once; a second observer would run every action twice.
         guard !isRemoteTriggerInstalled else {
             return

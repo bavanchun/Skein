@@ -167,6 +167,8 @@ extension Defaults {
         case showAllSectionsOnUserDrag = "ShowAllSectionsOnUserDrag"
         case showContextMenuOnRightClick = "ShowContextMenuOnRightClick"
         case forceLegacyMenuBar = "ForceLegacyMenuBar"
+        case collapseUnitOverride = "CollapseUnitOverride"
+        case diagnosticsRemoteTrigger = "DiagnosticsRemoteTrigger"
 
         // MARK: Menu Bar Appearance Settings
 

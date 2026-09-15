@@ -197,6 +197,17 @@ final class AppState: ObservableObject {
         imageCache.performSetup()
         updatesManager.performSetup()
         userNotificationManager.performSetup()
+        if MenuBarPlatform.usesMenuBarAgent {
+            CollapseController.shared.installObservers(appState: self)
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                let dividers = [
+                    menuBarManager.section(withName: .hidden)?.controlItem,
+                    menuBarManager.section(withName: .alwaysHidden)?.controlItem,
+                ].compactMap { $0 }
+                await CollapseController.shared.resolve(dividers)
+            }
+        }
     }
 
     /// Assigns the app delegate to the app state.

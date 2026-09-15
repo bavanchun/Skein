@@ -227,6 +227,16 @@ final class MenuBarSection {
         }
         appState.allowShowOnHover()
         stopRehideChecks()
+
+        if MenuBarPlatform.usesMenuBarAgent {
+            let dividers = [
+                appState.menuBarManager.section(withName: .hidden)?.controlItem,
+                appState.menuBarManager.section(withName: .alwaysHidden)?.controlItem,
+            ].compactMap { $0 }
+            Task {
+                await CollapseController.shared.resolve(dividers)
+            }
+        }
     }
 
     /// Toggles the visibility of the section.

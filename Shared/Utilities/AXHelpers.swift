@@ -1,6 +1,6 @@
 //
 //  AXHelpers.swift
-//  Shared
+//  Skein
 //
 
 import AXSwift
@@ -44,5 +44,9 @@ enum AXHelpers {
 
     static func role(for element: UIElement) -> Role? {
         queue.sync { try? element.role() }
+    }
+
+    static func description(for element: UIElement) -> String? {
+        queue.sync { try? element.attribute(.description) }
     }
 }
