@@ -166,6 +166,7 @@ extension Defaults {
         case tempShowInterval = "TempShowInterval"
         case showAllSectionsOnUserDrag = "ShowAllSectionsOnUserDrag"
         case showContextMenuOnRightClick = "ShowContextMenuOnRightClick"
+        case forceLegacyMenuBar = "ForceLegacyMenuBar"
 
         // MARK: Menu Bar Appearance Settings
 

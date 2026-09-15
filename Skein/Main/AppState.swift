@@ -182,6 +182,9 @@ final class AppState: ObservableObject {
         configureCancellables()
         permissionsManager.stopAllChecks()
         menuBarManager.performSetup()
+        #if DEBUG
+        DiagnosticsMenu.installRemoteTrigger()
+        #endif
         if #available(macOS 26.0, *) {
             Task {
                 await MenuBarItemService.Connection.shared.start()

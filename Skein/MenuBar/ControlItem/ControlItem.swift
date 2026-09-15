@@ -501,6 +501,10 @@ final class ControlItem {
         checkForUpdatesItem.target = self
         menu.addItem(checkForUpdatesItem)
 
+        #if DEBUG
+        menu.addItem(DiagnosticsMenu.make())
+        #endif
+
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(

@@ -21,6 +21,11 @@ struct Logger {
         base.info("\(message, privacy: .public)")
     }
 
+    /// Logs the given notice message to the logger. Notices persist in `log show` by default.
+    func notice(_ message: String) {
+        base.notice("\(message, privacy: .public)")
+    }
+
     /// Logs the given debug message to the logger.
     func debug(_ message: String) {
         base.debug("\(message, privacy: .public)")
