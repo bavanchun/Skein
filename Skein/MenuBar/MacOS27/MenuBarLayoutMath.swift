@@ -149,27 +149,85 @@ enum MenuBarLayoutMath {
         guard !caps.isEmpty else {
             return (startUnit(screenWidths: []), [])
         }
-        let sortedCaps = caps.sorted(by: >)
-        guard let minCap = sortedCaps.last else {
+        let sortedCaps = caps.sorted()
+        var dedupedCaps: [CGFloat] = []
+        for cap in sortedCaps {
+            if
+                let last = dedupedCaps.last,
+                abs(cap - last) <= 2
+            {
+                continue
+            }
+            dedupedCaps.append(cap)
+        }
+        guard let c1 = dedupedCaps.first else {
             return (startUnit(screenWidths: []), [])
         }
-        let divider = min(max(minCap - margin, minimumUnit), maximumUnit)
+
+        func slot(_ x: CGFloat) -> CGFloat {
+            x + slotPadding
+        }
+
+        let divider = min(max(c1 - margin, minimumUnit), maximumUnit)
+        var used = slot(divider)
 
         var spacers: [CGFloat] = []
-        for cap in sortedCaps.dropLast() {
-            let spacerLength = min(max(cap - margin, minimumUnit), maximumUnit)
-            if abs(spacerLength - divider) <= 2 {
-                continue
-            }
-            if spacers.contains(where: { abs(spacerLength - $0) <= 2 }) {
-                continue
-            }
-            spacers.append(spacerLength)
-            if spacers.count == maximumSpacersPerDivider {
-                break
+        if dedupedCaps.count > 1 {
+            for index in 1..<dedupedCaps.count {
+                let ck = dedupedCaps[index]
+                let cPrev = dedupedCaps[index - 1]
+                let spacerSlot = slot(ck) - used - margin
+                if
+                    spacerSlot > slot(cPrev),
+                    spacerSlot - slotPadding >= minimumUnit
+                {
+                    let spacerLength = min(max(spacerSlot - slotPadding, minimumUnit), maximumUnit)
+                    spacers.append(spacerLength)
+                    used += spacerSlot
+                    if spacers.count == maximumSpacersPerDivider {
+                        break
+                    }
+                }
             }
         }
         return (divider, spacers)
+    }
+
+    /// Computes the search bounds for fill spacers in remaining display space.
+    static func fillBounds(
+        caps: [CGFloat],
+        ladder: (divider: CGFloat, spacers: [CGFloat])
+    ) -> (lower: CGFloat, upper: CGFloat)? {
+        guard !caps.isEmpty else {
+            return nil
+        }
+        let sortedCaps = caps.sorted()
+        var dedupedCaps: [CGFloat] = []
+        for cap in sortedCaps {
+            if
+                let last = dedupedCaps.last,
+                abs(cap - last) <= 2
+            {
+                continue
+            }
+            dedupedCaps.append(cap)
+        }
+        guard let largest = dedupedCaps.last else {
+            return nil
+        }
+
+        let lower: CGFloat
+        if dedupedCaps.count >= 2 {
+            lower = dedupedCaps[dedupedCaps.count - 2] + 1
+        } else {
+            lower = minimumUnit
+        }
+
+        let upper = min(largest, maximumUnit)
+        guard upper >= lower else {
+            return nil
+        }
+        return (lower, upper)
     }
 
     /// Computes the initial probe unit for a screen configuration.

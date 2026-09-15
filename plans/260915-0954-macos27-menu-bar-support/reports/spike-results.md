@@ -54,3 +54,20 @@ All three displays attached, measured through MenuBarAgent's Accessibility windo
   - A 700pt item was dropped on both non-main windows and honored on the main one.
 - The 1080pt display already shows an overflow chevron with no Skein items collapsed.
 - M5 (cap volatility across frontmost apps): not measured.
+
+## Shared menu bar space (2026-09-16)
+
+Three displays attached, no Skein running for the item tests.
+
+- Divider-only search on Skein Dev: the longest honored lengths were 1496 on the 3008pt main display, 588 on the 1800pt notched display and 280 on the 1080pt display. The next probes up (1560, 652 and 392) were dropped.
+- Applying a divider of 264 with spacers of 572 and 1480, each sized from one display's cap alone, dropped the divider:
+  - the main display listed spacer slots 588 and 1496 but no divider slot;
+  - the 1800pt display listed slot 588 but no divider slot;
+  - the 1080pt display listed only the divider.
+  - Items share each display's free space, in order from the trailing edge.
+- Test items of 264, 292 and 892:
+  - 1080pt window: slot 280 only.
+  - 1800pt window: slots 280 and 308.
+  - Main window: slots 280, 308 and 908.
+  - An item that doesn't fit in the remaining space is skipped, while smaller items still fit.
+- With those three items present, the main display also listed a fourth slot of 616 (item 600), but not a slot of 1216 (item 1200). The main display's free space is larger than its single-item cap of about 1512.

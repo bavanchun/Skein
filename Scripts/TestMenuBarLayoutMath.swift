@@ -33,17 +33,23 @@ struct TestMenuBarLayoutMath {
         expect(MenuBarLayoutMath.nextProbe(honored: 40, dropped: 80) == 56, "nextProbe(honored: 40, dropped: 80) == 56")
         expect(MenuBarLayoutMath.nextProbe(honored: 40, dropped: 72) == nil, "nextProbe(honored: 40, dropped: 72) == nil")
 
-        let (div1, sp1) = MenuBarLayoutMath.ladderLengths(caps: [1496, 640, 264])
-        expect(div1 == 248 && sp1 == [1480, 624], "ladderLengths(caps: [1496, 640, 264]) == (248, [1480, 624])")
+        let (div1, sp1) = MenuBarLayoutMath.ladderLengths(caps: [280, 588, 1496])
+        expect(div1 == 264 && sp1 == [292, 892], "ladderLengths(caps: [280, 588, 1496]) == (264, [292, 892])")
 
-        let (div2, sp2) = MenuBarLayoutMath.ladderLengths(caps: [264])
-        expect(div2 == 248 && sp2.isEmpty, "ladderLengths(caps: [264]) == (248, [])")
+        let (div2, sp2) = MenuBarLayoutMath.ladderLengths(caps: [280])
+        expect(div2 == 264 && sp2.isEmpty, "ladderLengths(caps: [280]) == (264, [])")
 
-        let (_, sp3) = MenuBarLayoutMath.ladderLengths(caps: [2000, 1800, 1600, 1400, 1200, 1000, 800])
-        expect(sp3.count == 6, "seven distinct caps give six spacers")
+        let (div3, sp3) = MenuBarLayoutMath.ladderLengths(caps: [280, 300])
+        expect(div3 == 264 && sp3.isEmpty, "ladderLengths(caps: [280, 300]) == (264, [])")
 
         let (div4, _) = MenuBarLayoutMath.ladderLengths(caps: [40])
         expect(div4 == 40, "ladderLengths(caps: [40]).divider == 40")
+
+        let bounds1 = MenuBarLayoutMath.fillBounds(caps: [280, 588, 1496], ladder: (div1, sp1))
+        expect(bounds1?.lower == 589 && bounds1?.upper == 1496, "fillBounds(caps: [280, 588, 1496]) == (589, 1496)")
+
+        let bounds2 = MenuBarLayoutMath.fillBounds(caps: [1496], ladder: (div1, sp1))
+        expect(bounds2?.lower == 40 && bounds2?.upper == 1496, "fillBounds(caps: [1496]) == (40, 1496)")
 
         expect(MenuBarLayoutMath.summary([.collapsed, .itemsVisible]) == .itemsVisible, "summary([collapsed, itemsVisible]) == itemsVisible")
         expect(MenuBarLayoutMath.summary([.collapsed, .dividerDropped, .itemsVisible]) == .dividerDropped, "summary([collapsed, dividerDropped, itemsVisible]) == dividerDropped")

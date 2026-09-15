@@ -223,6 +223,84 @@ This section supersedes tasks 2.2–2.6 and 2.10, and the pass criteria of task 
   - The log has at least 4 `collapse honored` lines across configurations, 0 `collapse dropped`, 0 `collapse gave up`, and 0 `collapse incomplete` for the three-display configuration.
   - Ten app switches while hidden produce no `probe` lines.
 
+## Revision 3: shared-space ladder and fill spacers (2026-09-16)
+
+Revision 2 (commit `791a6c8`) searched correctly and ended its loop. On hardware it logged `collapse dropped` because each spacer length was set from that display's single-item cap alone, as if items did not share space.
+
+Measured on three displays (`reports/spike-results.md`, "Shared menu bar space"):
+
+- MenuBarAgent places items one at a time from the trailing edge. An item is honored on a display only if its slot fits in that display's remaining space, and any item that doesn't fit is skipped, so smaller items further left can still be honored.
+- The divider-only search returned lengths of 1496 (3008pt main), 588 (1800pt notched) and 280 (1080pt).
+- The Revision 2 ladder applied a divider of 264 with spacers of 572 and 1480. The main display honored both spacers but dropped the divider, and the 1800pt display did the same with the 572 spacer.
+- Test items of 264, 292 and 892 gave the expected result on every display: the 1080pt window listed slot 280, the 1800pt window listed 280 and 308, and the main window listed 280, 308 and 908.
+- With those three items present, the main display also fit a fourth item of 600 (slot 616) but not one of 1200.
+- The main display's free space is larger than its single-item cap, so it needs fill spacers.
+
+This section supersedes the `ladderLengths` definition in task R1 and extends task R4. Everything else in Revision 2 stands.
+
+### Task R7: math
+
+- **Target:** `MenuBarLayoutMath.swift`, `Scripts/TestMenuBarLayoutMath.swift`.
+- **`ladderLengths(caps:margin:)`:**
+  - `caps` are honored divider lengths, one per display. Work in slot widths, where `slot(x) = x + slotPadding`, and return lengths.
+  - Sort caps ascending into `c1 ≤ … ≤ cn` and deduplicate caps within 2pt.
+  - Divider: `divider = clamp(c1 - margin, minimumUnit, maximumUnit)` and `used = slot(divider)`.
+  - For each `k` from 2 to n, in order:
+    - `spacerSlot = slot(ck) - used - margin`.
+    - Accept it only when `spacerSlot > slot(c(k-1))`, so it is dropped on every narrower display, and when `spacerSlot - slotPadding >= minimumUnit`.
+    - On accept: append `spacerSlot - slotPadding`, clamped to `maximumUnit`, then `used += spacerSlot`.
+    - On reject: skip that display.
+    - Stop at `maximumSpacersPerDivider`.
+  - Spacers come back in ascending order.
+- **Add `static func fillBounds(caps: [CGFloat], ladder: (divider: CGFloat, spacers: [CGFloat])) -> (lower: CGFloat, upper: CGFloat)?`,** in lengths:
+  - `lower`: the smallest length a fill spacer may take and still be dropped on every narrower display. With two or more caps, that is `second-largest cap + 1`; otherwise `minimumUnit`.
+  - `upper`: `min(largest cap, maximumUnit)`.
+  - Return nil when `upper < lower`.
+- **Tests,** replacing the Revision 2 `ladderLengths` expectations:
+  - `ladderLengths(caps: [280, 588, 1496])` gives divider 264 and spacers `[292, 892]`:
+    - slot 280;
+    - `604 - 280 - 16 = 308 > 296`, so length 292;
+    - `1512 - 588 - 16 = 908 > 604`, so length 892.
+  - `ladderLengths(caps: [280])` gives `(264, [])`.
+  - `ladderLengths(caps: [280, 300])` gives `(264, [])`, because `316 - 280 - 16 = 20` is not greater than 296.
+  - `ladderLengths(caps: [40])` gives divider 40.
+  - `fillBounds(caps: [280, 588, 1496], ladder: …)` gives `(589, 1496)`.
+  - `fillBounds(caps: [1496], ladder: …)` gives `(40, 1496)`.
+- **Verify:** the task 2.2 command prints `PASS`.
+
+### Task R8: fill spacers in the controller
+
+- **Target:** `CollapseController.swift`, and `CollapseSpacers.swift` only if an accessor is needed.
+- **State:** `fills: [String: [CGFloat]]`, keyed by configuration key. It is in-memory only, like `caps`.
+- **`spacerLengths(for:)`:** returns `ladder.spacers + fills[key]`, capped at `maximumSpacersPerDivider`.
+- **After a search:** apply the ladder, settle, observe. If the summary is `itemsVisible` and no display is `dividerDropped`, run `fill(dividers:)`.
+- **`fill(dividers:)`:**
+  - Take `bounds = fillBounds(...)` and `candidate = bounds.upper`.
+  - While spacers are under the cap and the probe count is under 12:
+    - Apply the ladder spacers + fills + `candidate` through the normal sink: set `probeFill = candidate`, then `reapplyCollapseLength()`.
+    - Settle, then observe.
+    - **Any display `dividerDropped`, or unknown:** set `candidate = floor((candidate + bounds.lower) / 2)` to a `searchResolution` multiple. Stop when it falls below `bounds.lower`.
+    - **Otherwise, the candidate is kept:** append it to `fills[key]`. Stop once no display is `itemsVisible`; if some still is, continue with the same `candidate`.
+  - Clear `probeFill` and apply the final lengths.
+  - Log `collapse honored screens=<key> divider=<d> spacers=<…>`, or `collapse incomplete screens=<key> display=<w>` for any remaining `itemsVisible`.
+- **Caches and backoff:**
+  - A later `check` that finds `dividerDropped` clears `fills[key]` before its search.
+  - `resolve` with cached caps applies the cached fills too.
+  - Fill probes count toward the same backoff and failure cap as search probes.
+- Spacers keep their autosave names and accessibility identifiers (`HItemSpacer<n>`). A fill spacer is just a later index.
+
+### Revised task 2.12 pass criteria (coordinator)
+
+These criteria replace the Revision 2 pass criteria.
+
+- **Setup:** with no Skein running, place every `HItemSpacer<n>` key right of `HItem` through CFPreferences read-modify-write, after a backup.
+- **Three-display configuration:**
+  - `collapse honored` appears.
+  - In each display's `ax-slots` dump, the divider slot is present.
+  - No hidden-section icon appears in any strip capture.
+- **Ten app switches while hidden:** no `probe` lines.
+- **Single-display configurations:** each logs `collapse honored`. These need the maintainer to detach displays.
+
 ## Tasks
 
 ### Task 2.1 — Defaults keys
