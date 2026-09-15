@@ -45,7 +45,7 @@ Full report: [Apple official sources](../reports/researcher-260915-1650-apple-of
 | # | Phase | Depends on | Effort | Status |
 |---|-------|-----------|--------|--------|
 | 1 | [Foundation and verification spikes](./phase-01-foundation-and-verification-spikes.md) | — | 2.5d | Partial (PR #35; 3 spikes pending, CLIFF_MARGIN partial) |
-| 2 | [Hide and show on macOS 27](./phase-02-hide-show-on-macos27.md) | 1 | 2.5d | Pending |
+| 2 | [Hide and show on macOS 27](./phase-02-hide-show-on-macos27.md) (rewritten: per-display measured unit) | 1 | 3d | Pending |
 | 3 | [Accessibility item enumeration and table reader](./phase-03-ax-item-enumeration-and-table-reader.md) | 1, 2 | 3d | Pending |
 | 4 | [Events, search, Skein Bar and temp-show](./phase-04-events-search-skein-bar-and-temp-show.md) | 3 | 2d | Pending |
 | 5 | [Item images with Screen Recording](./phase-05-item-images-with-screen-recording.md) | 3, 4 | 1.5d | Pending |
