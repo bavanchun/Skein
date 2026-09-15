@@ -22,6 +22,8 @@ enum DiagnosticsMenu {
     /// Retains the menu item targets for the lifetime of the app.
     private static let target = Target()
 
+    private static var isRemoteTriggerInstalled = false
+
     private static let actions: [(String, Selector)] = [
         ("Dump Layout Table", #selector(Target.dumpLayoutTable)),
         ("Spike: Table Access", #selector(Target.spikeTableAccess)),
@@ -37,6 +39,11 @@ enum DiagnosticsMenu {
     /// menu unreachable; this lets the same actions run from a script instead.
     /// Post `<bundle id>.diagnostics` with the action title as the object.
     static func installRemoteTrigger() {
+        // Setup can run more than once; a second observer would run every action twice.
+        guard !isRemoteTriggerInstalled else {
+            return
+        }
+        isRemoteTriggerInstalled = true
         let name = Notification.Name("\(Constants.bundleIdentifier).diagnostics")
         DistributedNotificationCenter.default().addObserver(forName: name, object: nil, queue: .main) { notification in
             let title = notification.object as? String
