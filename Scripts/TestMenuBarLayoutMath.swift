@@ -34,7 +34,10 @@ struct TestMenuBarLayoutMath {
         expect(MenuBarLayoutMath.nextProbe(honored: 40, dropped: 72) == nil, "nextProbe(honored: 40, dropped: 72) == nil")
 
         let (div1, sp1) = MenuBarLayoutMath.ladderLengths(caps: [280, 588, 1496])
-        expect(div1 == 264 && sp1 == [292, 892], "ladderLengths(caps: [280, 588, 1496]) == (264, [292, 892])")
+        expect(div1 == 264 && sp1 == [1200], "ladderLengths(caps: [280, 588, 1496]) == (264, [1200])")
+
+        let (_, spNarrowGap) = MenuBarLayoutMath.ladderLengths(caps: [280, 900, 1000])
+        expect(spNarrowGap.isEmpty, "ladderLengths(caps: [280, 900, 1000]) has no spacer shorter than the second cap")
 
         let (div2, sp2) = MenuBarLayoutMath.ladderLengths(caps: [280])
         expect(div2 == 264 && sp2.isEmpty, "ladderLengths(caps: [280]) == (264, [])")
@@ -180,6 +183,20 @@ struct TestMenuBarLayoutMath {
                 ownSlotWidths: ownWidths
             ) == .itemsVisible,
             "identifier matching wins over a width clash"
+        )
+
+        let obs9 = Obs(bar: bar, slots: [
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+        ])
+        expect(
+            MenuBarLayoutMath.state(
+                of: obs9,
+                dividerIdentifier: dividerID,
+                dividerSlotWidth: 4208,
+                ownIdentifiers: ownIDs,
+                ownSlotWidths: ownWidths
+            ) == .dividerDropped,
+            "divider slot at a previous width reads as dropped"
         )
 
         if failures == 0 {

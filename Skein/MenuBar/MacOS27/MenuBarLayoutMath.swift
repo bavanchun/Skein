@@ -96,9 +96,15 @@ enum MenuBarLayoutMath {
             return ownSlotWidths.contains { abs(slot.frame.width - $0) <= 1 }
         }
 
+        // The width must match even when the identifier does: after a length change,
+        // the main display can still list the divider's slot at its previous width
+        // while the new length is dropped.
         func isDivider(_ slot: Slot) -> Bool {
-            if let id = slot.identifier {
-                return id == dividerIdentifier
+            if
+                let id = slot.identifier,
+                id != dividerIdentifier
+            {
+                return false
             }
             return abs(slot.frame.width - dividerSlotWidth) <= 1
         }
@@ -169,25 +175,24 @@ enum MenuBarLayoutMath {
         }
 
         let divider = min(max(c1 - margin, minimumUnit), maximumUnit)
-        var used = slot(divider)
+        let used = slot(divider)
 
+        // A spacer must be longer than the second-widest display's cap so that every
+        // narrower display drops it. A notch splits a display's free space into two
+        // regions, so a spacer honored there can take the region the divider needs.
+        // Only the widest display gets a ladder spacer; fill spacers cover the rest.
         var spacers: [CGFloat] = []
-        if dedupedCaps.count > 1 {
-            for index in 1..<dedupedCaps.count {
-                let ck = dedupedCaps[index]
-                let cPrev = dedupedCaps[index - 1]
-                let spacerSlot = slot(ck) - used - margin
-                if
-                    spacerSlot > slot(cPrev),
-                    spacerSlot - slotPadding >= minimumUnit
-                {
-                    let spacerLength = min(max(spacerSlot - slotPadding, minimumUnit), maximumUnit)
-                    spacers.append(spacerLength)
-                    used += spacerSlot
-                    if spacers.count == maximumSpacersPerDivider {
-                        break
-                    }
-                }
+        if
+            dedupedCaps.count > 1,
+            let widest = dedupedCaps.last
+        {
+            let secondWidest = dedupedCaps[dedupedCaps.count - 2]
+            let spacerSlot = slot(widest) - used - margin
+            if
+                spacerSlot > slot(secondWidest),
+                spacerSlot - slotPadding >= minimumUnit
+            {
+                spacers.append(min(spacerSlot - slotPadding, maximumUnit))
             }
         }
         return (divider, spacers)

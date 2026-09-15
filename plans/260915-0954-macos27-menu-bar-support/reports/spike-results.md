@@ -71,3 +71,12 @@ Three displays attached, no Skein running for the item tests.
   - Main window: slots 280, 308 and 908.
   - An item that doesn't fit in the remaining space is skipped, while smaller items still fit.
 - With those three items present, the main display also listed a fourth slot of 616 (item 600), but not a slot of 1216 (item 1200). The main display's free space is larger than its single-item cap of about 1512.
+
+## Notch regions and resized divider slots (2026-09-16)
+
+- 1800pt notched display, with the ladder applied (divider 264, spacers 292 and 828): the window listed the 308 spacer slot but no divider slot.
+  - About 210pt was free right of the notch.
+  - A single item of up to 588 fit, left of the notch.
+  - Free space on a notched display is two regions, not one.
+- Main display: after the divider was lengthened past its cap, the window kept listing the divider at its previous width. A freshly added 4192pt item had no slot on any window.
+- Ten app activations with the hidden section collapsed produced no collapse probes.

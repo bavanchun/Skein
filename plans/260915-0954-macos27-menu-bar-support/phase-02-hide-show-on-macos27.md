@@ -301,6 +301,27 @@ These criteria replace the Revision 2 pass criteria.
 - **Ten app switches while hidden:** no `probe` lines.
 - **Single-display configurations:** each logs `collapse honored`. These need the maintainer to detach displays.
 
+## Revision 4: widest-display spacer only (2026-09-16, coordinator)
+
+Hardware run of Revision 3 (commit `5aed46f`, divider width fix applied):
+
+- The search found caps of 280 (1080pt), 588 (1800pt) and 1432 (3008pt).
+- The ladder applied a divider of 264 and spacers of 292 and 828.
+- Main display: listed all three slots and was collapsed.
+- 1800pt notched display: listed the 308 spacer slot but no divider.
+  - The notch splits free space into a region left of the notch and a region of about 210pt right of it.
+  - An item fits if it fits in either region, so the single-item cap of 588 does not mean a 308 spacer and a 280 divider fit together.
+- 1080pt display: listed the 308 spacer slot but no divider. Its cap was underestimated when the 12-probe budget left the 280–392 bracket open.
+- Separately, a divider slot on the main display's window can keep its previous width while the new length is dropped. Revision 3's identifier-only match read that as present.
+
+Changes, made by the coordinator:
+
+- `state(of:)` matches the divider by identifier and width together. Test: "divider slot at a previous width reads as dropped".
+- `ladderLengths` gives a spacer only to the widest display, and only when the spacer's slot exceeds the second-widest cap's slot. Every narrower display then drops it regardless of notch regions.
+- Coverage on the widest display comes from that spacer plus fill spacers. `fillBounds` already uses the second-widest cap + 1 as its lower bound.
+- Test: `ladderLengths(caps: [280, 588, 1496]) == (264, [1200])`.
+- Test: `ladderLengths(caps: [280, 900, 1000])` gives no spacer.
+
 ## Tasks
 
 ### Task 2.1 — Defaults keys
