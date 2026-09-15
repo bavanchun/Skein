@@ -44,16 +44,32 @@ struct SkeinSlider<Value: BinaryFloatingPoint, ValueLabel: View, ValueLabelSelec
         }
     }
 
+    @Environment(\.isEnabled) private var isEnabled
+
     var body: some View {
         CompactSlider(
             value: value,
             in: bounds,
-            step: step,
-            handleVisibility: .hovering(width: 1)
-        ) {
-            valueLabel
-                .textSelection(valueLabelSelectability)
+            step: step
+        )
+        .compactSliderHandleStyle(.rectangle(visibility: .focused, width: 1))
+        .compactSliderOptionsByRemoving(.enabledHapticFeedback)
+        .overlay {
+            HStack {
+                valueLabel
+                    .textSelection(valueLabelSelectability)
+            }
+            .padding(.horizontal, 6)
         }
-        .compactSliderDisabledHapticFeedback(true)
+        // CompactSlider 2 no longer dims when disabled or sizes itself; its
+        // default style expands to fill the proposed height.
+        .opacity(isEnabled ? 1 : 0.5)
+        .frame(minHeight: .compactSliderMinHeight)
+        .fixedSize(horizontal: false, vertical: true)
     }
+}
+
+extension CGFloat {
+    /// The minimum height of a ``SkeinSlider``, also used to align labels beside one.
+    static let compactSliderMinHeight: CGFloat = 24
 }
