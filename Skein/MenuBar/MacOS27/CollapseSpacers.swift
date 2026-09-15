@@ -32,8 +32,10 @@ final class CollapseSpacers {
         let initialCount = items.count
         while items.count < count {
             let item = NSStatusBar.system.statusItem(withLength: Self.restingLength)
-            item.autosaveName = "\(dividerAutosaveName)Spacer\(items.count)"
+            let autosaveName = "\(dividerAutosaveName)Spacer\(items.count)"
+            item.autosaveName = autosaveName
             item.button?.isEnabled = false
+            item.button?.setAccessibilityIdentifier(autosaveName)
             items.append(item)
         }
         if
@@ -46,10 +48,10 @@ final class CollapseSpacers {
     }
 
     /// Applies lengths to active and resting spacers.
-    func apply(activeCount: Int, collapsed: Bool, unit: CGFloat) {
+    func apply(lengths: [CGFloat]) {
         for (index, item) in items.enumerated() {
-            if collapsed && index < activeCount {
-                item.length = unit
+            if index < lengths.count {
+                item.length = lengths[index]
             } else {
                 item.length = Self.restingLength
             }

@@ -33,33 +33,148 @@ struct TestMenuBarLayoutMath {
         expect(MenuBarLayoutMath.nextProbe(honored: 40, dropped: 80) == 56, "nextProbe(honored: 40, dropped: 80) == 56")
         expect(MenuBarLayoutMath.nextProbe(honored: 40, dropped: 72) == nil, "nextProbe(honored: 40, dropped: 72) == nil")
 
-        expect(MenuBarLayoutMath.spacerCount(widestWidth: 1800, unit: 884) == 2, "spacerCount(widestWidth: 1800, unit: 884) == 2")
-        expect(MenuBarLayoutMath.spacerCount(widestWidth: 3008, unit: 524) == 5, "spacerCount(widestWidth: 3008, unit: 524) == 5")
-        expect(MenuBarLayoutMath.spacerCount(widestWidth: 3008, unit: 216) == 6, "spacerCount(widestWidth: 3008, unit: 216) == 6")
-        expect(MenuBarLayoutMath.spacerCount(widestWidth: 0, unit: 216) == 0, "spacerCount(widestWidth: 0, unit: 216) == 0")
+        let (div1, sp1) = MenuBarLayoutMath.ladderLengths(caps: [1496, 640, 264])
+        expect(div1 == 248 && sp1 == [1480, 624], "ladderLengths(caps: [1496, 640, 264]) == (248, [1480, 624])")
 
-        expect(MenuBarLayoutMath.coversWidest(widestWidth: 3008, unit: 524, spacers: 5) == true, "coversWidest(widestWidth: 3008, unit: 524, spacers: 5) == true")
-        expect(MenuBarLayoutMath.coversWidest(widestWidth: 3008, unit: 216, spacers: 6) == false, "coversWidest(widestWidth: 3008, unit: 216, spacers: 6) == false")
+        let (div2, sp2) = MenuBarLayoutMath.ladderLengths(caps: [264])
+        expect(div2 == 248 && sp2.isEmpty, "ladderLengths(caps: [264]) == (248, [])")
 
+        let (_, sp3) = MenuBarLayoutMath.ladderLengths(caps: [2000, 1800, 1600, 1400, 1200, 1000, 800])
+        expect(sp3.count == 6, "seven distinct caps give six spacers")
+
+        let (div4, _) = MenuBarLayoutMath.ladderLengths(caps: [40])
+        expect(div4 == 40, "ladderLengths(caps: [40]).divider == 40")
+
+        expect(MenuBarLayoutMath.summary([.collapsed, .itemsVisible]) == .itemsVisible, "summary([collapsed, itemsVisible]) == itemsVisible")
+        expect(MenuBarLayoutMath.summary([.collapsed, .dividerDropped, .itemsVisible]) == .dividerDropped, "summary([collapsed, dividerDropped, itemsVisible]) == dividerDropped")
+        expect(MenuBarLayoutMath.summary([]) == nil, "summary([]) == nil")
+
+        typealias Slot = MenuBarLayoutMath.Slot
         typealias Obs = MenuBarLayoutMath.DisplayObservation
-        let before1 = ["A": Obs(0, 0), "B": Obs(1, 0)]
-        let after1 = ["A": Obs(1, 0), "B": Obs(2, 0)]
-        expect(MenuBarLayoutMath.isHonored(before: before1, after: after1, expectedIncrease: 1) == true, "isHonored 1 == true")
+        let bar = CGRect(x: 0, y: 0, width: 2000, height: 24)
+        let dividerID = "HItem"
+        let dividerWidth: CGFloat = 264
+        let ownIDs: Set<String> = ["HItem", "AHItem", "SItem", "HItemSpacer0"]
+        let ownWidths: Set<CGFloat> = [264, 17, 30]
 
-        var after2 = after1
-        after2["A"] = Obs(1, 1)
-        expect(MenuBarLayoutMath.isHonored(before: before1, after: after2, expectedIncrease: 1) == false, "after[A]=(1,1) -> false")
+        let obs1 = Obs(bar: bar, slots: [
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+        ])
+        expect(
+            MenuBarLayoutMath.state(
+                of: obs1,
+                dividerIdentifier: dividerID,
+                dividerSlotWidth: dividerWidth,
+                ownIdentifiers: ownIDs,
+                ownSlotWidths: ownWidths
+            ) == .collapsed,
+            "block with nothing left of it gives collapsed"
+        )
 
-        var after3 = after1
-        after3["B"] = Obs(1, 0)
-        expect(MenuBarLayoutMath.isHonored(before: before1, after: after3, expectedIncrease: 1) == false, "after[B]=(1,0) -> false")
+        let obs2 = Obs(bar: bar, slots: [
+            Slot(frame: CGRect(x: 1000, y: 0, width: 50, height: 24), isChevron: false, identifier: "OtherApp")
+        ])
+        expect(
+            MenuBarLayoutMath.state(
+                of: obs2,
+                dividerIdentifier: dividerID,
+                dividerSlotWidth: dividerWidth,
+                ownIdentifiers: ownIDs,
+                ownSlotWidths: ownWidths
+            ) == .dividerDropped,
+            "missing divider gives dividerDropped"
+        )
 
-        let afterEmpty: [String: Obs] = [:]
-        expect(MenuBarLayoutMath.isHonored(before: before1, after: afterEmpty, expectedIncrease: 1) == false, "after=[:] -> false")
+        let obs3 = Obs(bar: bar, slots: [
+            Slot(frame: CGRect(x: 800, y: 0, width: 42, height: 24), isChevron: false, identifier: nil),
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+        ])
+        expect(
+            MenuBarLayoutMath.state(
+                of: obs3,
+                dividerIdentifier: dividerID,
+                dividerSlotWidth: dividerWidth,
+                ownIdentifiers: ownIDs,
+                ownSlotWidths: ownWidths
+            ) == .itemsVisible,
+            "42pt non-ours slot left of the block gives itemsVisible"
+        )
 
-        let beforeEmpty: [String: Obs] = [:]
-        let after4 = ["A": Obs(2, 0)]
-        expect(MenuBarLayoutMath.isHonored(before: beforeEmpty, after: after4, expectedIncrease: 2) == true, "before empty after [A:(2,0)] -> true")
+        let obs4 = Obs(bar: bar, slots: [
+            Slot(frame: CGRect(x: 500, y: 0, width: 30, height: 24), isChevron: true, identifier: nil),
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+        ])
+        expect(
+            MenuBarLayoutMath.state(
+                of: obs4,
+                dividerIdentifier: dividerID,
+                dividerSlotWidth: dividerWidth,
+                ownIdentifiers: ownIDs,
+                ownSlotWidths: ownWidths
+            ) == .collapsed,
+            "chevron left of the block is ignored (collapsed)"
+        )
+
+        let obs5 = Obs(bar: bar, slots: [
+            Slot(frame: CGRect(x: 100, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
+            Slot(frame: CGRect(x: 120, y: 0, width: 50, height: 24), isChevron: false, identifier: "AppA")
+        ])
+        expect(
+            MenuBarLayoutMath.state(
+                of: obs5,
+                dividerIdentifier: dividerID,
+                dividerSlotWidth: dividerWidth,
+                ownIdentifiers: ownIDs,
+                ownSlotWidths: ownWidths
+            ) == .collapsed,
+            "divider inside an overlapping pile gives collapsed"
+        )
+
+        let obs6 = Obs(bar: bar, slots: [
+            Slot(frame: CGRect(x: 200, y: 0, width: 40, height: 24), isChevron: false, identifier: "AppA"),
+            Slot(frame: CGRect(x: 210, y: 0, width: 40, height: 24), isChevron: false, identifier: "AppB"),
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+        ])
+        expect(
+            MenuBarLayoutMath.state(
+                of: obs6,
+                dividerIdentifier: dividerID,
+                dividerSlotWidth: dividerWidth,
+                ownIdentifiers: ownIDs,
+                ownSlotWidths: ownWidths
+            ) == .collapsed,
+            "non-ours slot inside the pile left of the block is ignored (collapsed)"
+        )
+
+        let obs7 = Obs(bar: bar, slots: [
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
+            Slot(frame: CGRect(x: 1300, y: 0, width: 42, height: 24), isChevron: false, identifier: "RightApp")
+        ])
+        expect(
+            MenuBarLayoutMath.state(
+                of: obs7,
+                dividerIdentifier: dividerID,
+                dividerSlotWidth: dividerWidth,
+                ownIdentifiers: ownIDs,
+                ownSlotWidths: ownWidths
+            ) == .collapsed,
+            "non-ours slot right of the block gives collapsed"
+        )
+
+        let obs8 = Obs(bar: bar, slots: [
+            Slot(frame: CGRect(x: 700, y: 0, width: 264, height: 24), isChevron: false, identifier: "OtherApp"),
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+        ])
+        expect(
+            MenuBarLayoutMath.state(
+                of: obs8,
+                dividerIdentifier: dividerID,
+                dividerSlotWidth: dividerWidth,
+                ownIdentifiers: ownIDs,
+                ownSlotWidths: ownWidths
+            ) == .itemsVisible,
+            "identifier matching wins over a width clash"
+        )
 
         if failures == 0 {
             print("PASS")

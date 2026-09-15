@@ -37,3 +37,20 @@ AXPRESS_OFFSCREEN=yes
 - S2 without Full Disk Access must be measured from Skein Dev launched by Launch Services (`open` or `Scripts/run-dev.sh`), never by executing the binary from a terminal that has Full Disk Access.
 - Tooling: the Skein icon is not drawn on any display on macOS 27 while the hidden divider is 10000pt, so the Diagnostics menu is unreachable. Skein Dev (Debug only) also runs each diagnostics action when a distributed notification `<bundle id>.diagnostics` names it.
 - Toolchain: Xcode 27's SwiftUI makes `LinearGradient(...).opacity(...)` in CompactSlider 1.1.6–1.2.1 ambiguous. Local spike builds used a patched checkout under `.ci-output/`; the repository fix is still open.
+
+## Phase 2 hardware measurements (2026-09-16)
+
+All three displays attached, measured through MenuBarAgent's Accessibility windows. Raw dumps stay in `.ci-output/`.
+
+- The first collapse design logged `self-test failed` 7 times in about 6 minutes after the spacers were placed right of the hidden divider. The cause was a before/after slot delta probed on an already-applied length. Skein Dev was quit and the spacer positions restored from backup: 6/6 keys verified on disk.
+- M1 overflow: items the system moves into the « overflow keep slot frames that overlap each other beside the chevron. Frames still intersect the bar, so overflow is detected by overlap, not by intersection.
+- M3 identity: slots have no `AXIdentifier`.
+  - On the main display's window, each slot's child is the app's `AXButton`, which exposes the button's title and `setAccessibilityIdentifier` value (2/2 test items).
+  - On the other windows the child is an `AXApplication` without an identifier.
+- Window children are not in x order.
+- M4 ladder: test items of 248pt and 1400pt were added together.
+  - The 3008pt window listed both slots (264 and 1416).
+  - The 1080pt and 1800pt windows listed only the 264 slot.
+  - A 700pt item was dropped on both non-main windows and honored on the main one.
+- The 1080pt display already shows an overflow chevron with no Skein items collapsed.
+- M5 (cap volatility across frontmost apps): not measured.

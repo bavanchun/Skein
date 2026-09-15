@@ -49,4 +49,8 @@ enum AXHelpers {
     static func description(for element: UIElement) -> String? {
         queue.sync { try? element.attribute(.description) }
     }
+
+    static func identifier(for element: UIElement) -> String? {
+        queue.sync { try? element.attribute(.identifier) }
+    }
 }

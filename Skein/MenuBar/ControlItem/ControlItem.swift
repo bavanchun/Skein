@@ -46,7 +46,7 @@ final class ControlItem {
     private let constraint: NSLayoutConstraint?
 
     /// The control item's identifier.
-    private let identifier: Identifier
+    let identifier: Identifier
 
     /// Spacers used to extend the divider's span on wide displays on macOS 27.
     private let spacers: CollapseSpacers?
@@ -62,6 +62,16 @@ final class ControlItem {
     /// The control item's window.
     var window: NSWindow? {
         statusItem.button?.window
+    }
+
+    /// The autosave name of the control item.
+    var autosaveName: String {
+        identifier.rawValue
+    }
+
+    /// The current length of the underlying status item.
+    var length: CGFloat {
+        statusItem.length
     }
 
     /// The identifier of the control item's window.
@@ -113,6 +123,7 @@ final class ControlItem {
             identifier == .hidden || identifier == .alwaysHidden
         {
             self.spacers = CollapseSpacers(dividerAutosaveName: autosaveName)
+            self.statusItem.button?.setAccessibilityIdentifier(autosaveName)
         } else {
             self.spacers = nil
         }
@@ -189,14 +200,10 @@ final class ControlItem {
                 }
                 if let spacers {
                     let widths = NSScreen.screens.map(\.frame.width)
-                    let unit = CollapseController.shared.unit(for: widths)
-                    let count = isAddedToMenuBar ? MenuBarLayoutMath.spacerCount(widestWidth: widths.max() ?? 0, unit: unit) : 0
-                    spacers.ensureCount(count)
-                    spacers.apply(
-                        activeCount: count,
-                        collapsed: isVisible && isAddedToMenuBar && state == .hideItems,
-                        unit: unit
-                    )
+                    let lengths = CollapseController.shared.spacerLengths(for: widths)
+                    let collapsed = isVisible && isAddedToMenuBar && state == .hideItems
+                    spacers.ensureCount(lengths.count)
+                    spacers.apply(lengths: collapsed ? lengths : [])
                 }
             }
             .store(in: &c)
@@ -575,6 +582,17 @@ final class ControlItem {
         state = state
     }
 
+    /// Applies a probe length directly to a collapsed divider without updating spacers.
+    func applyProbeLength(_ length: CGFloat) {
+        guard
+            isSectionDivider,
+            state == .hideItems
+        else {
+            return
+        }
+        statusItem.length = length
+    }
+
     /// Adds the control item to the menu bar.
     func addToMenuBar() {
         guard !isAddedToMenuBar else {
@@ -595,7 +613,7 @@ final class ControlItem {
         let cached = StatusItemDefaults[.preferredPosition, autosaveName]
         statusItem.isVisible = false
         StatusItemDefaults[.preferredPosition, autosaveName] = cached
-        spacers?.apply(activeCount: 0, collapsed: false, unit: 0)
+        spacers?.apply(lengths: [])
     }
 }
 

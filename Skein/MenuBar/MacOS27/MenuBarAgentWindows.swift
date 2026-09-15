@@ -3,23 +3,23 @@
 //  Skein
 //
 
+import AXSwift
 import Cocoa
 
 /// Observes MenuBarAgent's per-display menu bar windows through Accessibility.
 @MainActor
 enum MenuBarAgentWindows {
-    /// Observes the matching slots and notch chevrons in MenuBarAgent's per-display windows.
-    static func observe(slotWidth: CGFloat) -> [String: MenuBarLayoutMath.DisplayObservation] {
+    /// Observes the menu bar windows and composited slots in MenuBarAgent.
+    static func observe() -> [String: MenuBarLayoutMath.DisplayObservation]? {
         guard AXHelpers.isProcessTrusted() else {
-            return [:]
+            return nil
         }
         let agents = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.MenuBarAgent")
         guard !agents.isEmpty else {
-            return [:]
+            return nil
         }
 
-        var observations = [String: MenuBarLayoutMath.DisplayObservation]()
-
+        var allWindows: [UIElement] = []
         for agent in agents {
             guard let appElement = AXHelpers.application(for: agent) else {
                 continue
@@ -27,33 +27,52 @@ enum MenuBarAgentWindows {
             let windows = AXHelpers.children(for: appElement).filter {
                 AXHelpers.role(for: $0) == .window
             }
-            for window in windows {
-                guard let frame = AXHelpers.frame(for: window) else {
+            allWindows.append(contentsOf: windows)
+        }
+
+        guard allWindows.count == NSScreen.screens.count else {
+            return nil
+        }
+
+        var observations = [String: MenuBarLayoutMath.DisplayObservation]()
+
+        for window in allWindows {
+            guard let frame = AXHelpers.frame(for: window) else {
+                continue
+            }
+            let children = AXHelpers.children(for: window)
+            guard !children.isEmpty else {
+                return nil
+            }
+            let key = "\(Int(frame.minX)),\(Int(frame.minY)),\(Int(frame.width))"
+            var slots: [MenuBarLayoutMath.Slot] = []
+
+            for child in children {
+                guard let childFrame = AXHelpers.frame(for: child) else {
                     continue
                 }
-                let key = "\(Int(frame.minX)),\(Int(frame.minY)),\(Int(frame.width))"
-                let children = AXHelpers.children(for: window)
-
-                var matchingSlots = 0
-                var chevrons = 0
-
-                for child in children {
-                    if
-                        let childFrame = AXHelpers.frame(for: child),
-                        abs(childFrame.width - slotWidth) < 1
-                    {
-                        matchingSlots += 1
-                    }
-                    if AXHelpers.description(for: child) == "Show Hidden Menu Bar Items" {
-                        chevrons += 1
-                    }
+                let isChevron = AXHelpers.description(for: child) == "Show Hidden Menu Bar Items"
+                var identifier: String?
+                let slotChildren = AXHelpers.children(for: child)
+                if
+                    let firstChild = slotChildren.first,
+                    AXHelpers.role(for: firstChild) == .button
+                {
+                    identifier = AXHelpers.identifier(for: firstChild)
                 }
-
-                observations[key] = MenuBarLayoutMath.DisplayObservation(
-                    matchingSlots: matchingSlots,
-                    chevrons: chevrons
+                slots.append(
+                    MenuBarLayoutMath.Slot(
+                        frame: childFrame,
+                        isChevron: isChevron,
+                        identifier: identifier
+                    )
                 )
             }
+
+            observations[key] = MenuBarLayoutMath.DisplayObservation(
+                bar: frame,
+                slots: slots
+            )
         }
 
         return observations

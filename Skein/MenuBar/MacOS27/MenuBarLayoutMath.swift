@@ -23,20 +23,153 @@ enum MenuBarLayoutMath {
     /// Maximum spacer items permitted per divider.
     static let maximumSpacersPerDivider = 6
 
-    /// A snapshot of matching slots and notch chevrons observed on one display's menu bar window.
+    /// A composited status item slot observed in a MenuBarAgent window.
+    struct Slot: Equatable {
+        var frame: CGRect
+        var isChevron: Bool
+        var identifier: String?
+    }
+
+    /// An observation of a MenuBarAgent menu bar window and its slots.
     struct DisplayObservation: Equatable {
-        var matchingSlots: Int
-        var chevrons: Int
+        var bar: CGRect
+        var slots: [Slot]
+    }
 
-        init(matchingSlots: Int = 0, chevrons: Int = 0) {
-            self.matchingSlots = matchingSlots
-            self.chevrons = chevrons
+    /// The collapse state of a single display.
+    enum DisplayState: String, Equatable {
+        case collapsed
+        case dividerDropped
+        case itemsVisible
+    }
+
+    /// Determines whether a slot is overflowed, off-bar, or in an overflow pile.
+    static func isOverflowed(
+        _ slot: Slot,
+        among slots: [Slot],
+        bar: CGRect = .null
+    ) -> Bool {
+        if slot.isChevron {
+            return true
+        }
+        if slot.frame.width <= 0 {
+            return true
+        }
+        if
+            !bar.isNull,
+            !bar.isEmpty,
+            !slot.frame.intersects(bar)
+        {
+            return true
+        }
+        var foundSelf = false
+        for other in slots {
+            guard !other.isChevron else {
+                continue
+            }
+            if !foundSelf, other == slot {
+                foundSelf = true
+                continue
+            }
+            let overlap = min(slot.frame.maxX, other.frame.maxX) - max(slot.frame.minX, other.frame.minX)
+            if overlap > 1 {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Evaluates the collapse state for a display observation.
+    static func state(
+        of observation: DisplayObservation,
+        dividerIdentifier: String,
+        dividerSlotWidth: CGFloat,
+        ownIdentifiers: Set<String>,
+        ownSlotWidths: Set<CGFloat>
+    ) -> DisplayState {
+        let sortedSlots = observation.slots.sorted { $0.frame.minX < $1.frame.minX }
+
+        func isOurs(_ slot: Slot) -> Bool {
+            if let id = slot.identifier {
+                return ownIdentifiers.contains(id)
+            }
+            return ownSlotWidths.contains { abs(slot.frame.width - $0) <= 1 }
         }
 
-        init(_ matchingSlots: Int, _ chevrons: Int) {
-            self.matchingSlots = matchingSlots
-            self.chevrons = chevrons
+        func isDivider(_ slot: Slot) -> Bool {
+            if let id = slot.identifier {
+                return id == dividerIdentifier
+            }
+            return abs(slot.frame.width - dividerSlotWidth) <= 1
         }
+
+        guard sortedSlots.contains(where: isDivider) else {
+            return .dividerDropped
+        }
+
+        let oursNotOverflowed = sortedSlots.filter {
+            isOurs($0) && !isOverflowed($0, among: sortedSlots, bar: observation.bar)
+        }
+        guard !oursNotOverflowed.isEmpty else {
+            return .collapsed
+        }
+
+        let smallestOursMinX = oursNotOverflowed.map(\.frame.minX).min() ?? 0
+        let hasVisibleThirdParty = sortedSlots.contains { slot in
+            !isOurs(slot)
+                && !isOverflowed(slot, among: sortedSlots, bar: observation.bar)
+                && slot.frame.minX < smallestOursMinX
+        }
+
+        if hasVisibleThirdParty {
+            return .itemsVisible
+        }
+        return .collapsed
+    }
+
+    /// Summarizes display states into a single overall state.
+    static func summary(_ states: [DisplayState]) -> DisplayState? {
+        guard !states.isEmpty else {
+            return nil
+        }
+        if states.contains(.dividerDropped) {
+            return .dividerDropped
+        }
+        if states.contains(.itemsVisible) {
+            return .itemsVisible
+        }
+        return .collapsed
+    }
+
+    /// Computes the divider and spacer lengths for display caps.
+    static func ladderLengths(
+        caps: [CGFloat],
+        margin: CGFloat = 16
+    ) -> (divider: CGFloat, spacers: [CGFloat]) {
+        guard !caps.isEmpty else {
+            return (startUnit(screenWidths: []), [])
+        }
+        let sortedCaps = caps.sorted(by: >)
+        guard let minCap = sortedCaps.last else {
+            return (startUnit(screenWidths: []), [])
+        }
+        let divider = min(max(minCap - margin, minimumUnit), maximumUnit)
+
+        var spacers: [CGFloat] = []
+        for cap in sortedCaps.dropLast() {
+            let spacerLength = min(max(cap - margin, minimumUnit), maximumUnit)
+            if abs(spacerLength - divider) <= 2 {
+                continue
+            }
+            if spacers.contains(where: { abs(spacerLength - $0) <= 2 }) {
+                continue
+            }
+            spacers.append(spacerLength)
+            if spacers.count == maximumSpacersPerDivider {
+                break
+            }
+        }
+        return (divider, spacers)
     }
 
     /// Computes the initial probe unit for a screen configuration.
@@ -61,46 +194,5 @@ enum MenuBarLayoutMath {
             return nil
         }
         return low + (((high - low) / 2) / searchResolution).rounded(.down) * searchResolution
-    }
-
-    /// Spacer items needed next to one divider so the total span covers the widest screen.
-    static func spacerCount(widestWidth: CGFloat, unit: CGFloat) -> Int {
-        guard
-            widestWidth > 0,
-            unit > 0
-        else {
-            return 0
-        }
-        let count = Int((widestWidth / unit).rounded(.up)) - 1
-        return min(max(0, count), maximumSpacersPerDivider)
-    }
-
-    /// Determines whether the unit and spacer count cover the widest screen.
-    static func coversWidest(widestWidth: CGFloat, unit: CGFloat, spacers: Int) -> Bool {
-        unit * CGFloat(spacers + 1) >= widestWidth
-    }
-
-    /// Evaluates whether an item length is honored across all displays.
-    static func isHonored(
-        before: [String: DisplayObservation],
-        after: [String: DisplayObservation],
-        expectedIncrease: Int
-    ) -> Bool {
-        guard
-            !after.isEmpty,
-            expectedIncrease >= 1
-        else {
-            return false
-        }
-        for (key, afterObs) in after {
-            let beforeObs = before[key] ?? DisplayObservation(matchingSlots: 0, chevrons: 0)
-            guard afterObs.matchingSlots - beforeObs.matchingSlots >= expectedIncrease else {
-                return false
-            }
-            guard afterObs.chevrons <= beforeObs.chevrons else {
-                return false
-            }
-        }
-        return true
     }
 }

@@ -63,6 +63,166 @@ Maintainer decision (2026-09-15): measure the unit per display at runtime from M
 | Modify | `Skein/Utilities/Defaults.swift` | `collapseUnitOverride`, `diagnosticsRemoteTrigger` keys |
 | Modify | `Scripts/VerifyMenuBar27.swift` | Key windows by frame; `strip-capture --rect` |
 
+## Revision 2: measured redesign (2026-09-16)
+
+The first implementation (commit `b042342`) failed the task 2.12 hardware run. Counsel: `plans/reports/kongming-260915-2356-macos27-collapse-redesign.md` in the main checkout. Measurements are in `reports/spike-results.md` under "Phase 2 hardware measurements".
+
+This section supersedes tasks 2.2–2.6 and 2.10, and the pass criteria of task 2.12. Tasks 2.1, 2.7, 2.8, 2.9 and 2.13 stand.
+
+### Why the first design failed
+
+- **The probe could never pass on an already-applied length.** `isHonored` measured a before/after slot delta, but `verifyCurrent` and `resolve()` on a cached unit probed a length that was already applied, so the delta was always zero. Each failure also fell back to 40pt, which guaranteed the next check failed, so app activations drove a re-search loop.
+- **Each probe lengthened 7 items, not 1.** The spacers followed the divider's unit, which produced overflow chevrons that the rule then counted as failure.
+- **One unit can't cover every display.** A single unit of 248pt with 6 spacers spans 1736pt, less than the roughly 2150pt free on the 3008pt display.
+
+### Measured facts this design relies on
+
+- **M1: overflowed items stay listed.** They keep AX slot frames that overlap each other in a pile beside the chevron. Frame intersection with the bar doesn't distinguish them, but overlap does.
+- **M3: slot identity.** Slots themselves carry no `AXIdentifier`.
+  - On the main display's window, each slot's single child is the app's `AXButton`, and `NSStatusBarButton.setAccessibilityIdentifier(_:)` is readable there.
+  - On non-main windows the child is an `AXApplication` with no identifier.
+  - So identity is matched by identifier on the window that exposes it, and by slot width elsewhere.
+- **Child order:** window children are not in x order. Always sort by `frame.minX`.
+- **M4: one status item takes different lengths per display.** A 248pt item and a 1400pt item were added together:
+  - the 3008pt window listed both slots (264 and 1416);
+  - the 1080pt and 1800pt windows listed only the 264 slot.
+  - A spacer that is too long for a display is dropped there, while the divider keeps its slot on every display.
+- **M5 (volatility across frontmost apps):** not measured. The design stays safe either way: checks are read-only, and a re-search is bounded and runs only when the divider is dropped.
+
+### Task R1: math and tests
+
+- **Target:** `MenuBarLayoutMath.swift`, `Scripts/TestMenuBarLayoutMath.swift`.
+- **Remove:** `DisplayObservation` (the old delta struct), `isHonored`, `spacerCount` and `coversWidest`.
+- **Keep:** `slotPadding`, `minimumUnit`, `maximumUnit`, `searchResolution`, `maximumSpacersPerDivider`, `startUnit` and `nextProbe`, with their existing tests.
+- **Add these types:**
+  - `struct Slot: Equatable { var frame: CGRect; var isChevron: Bool; var identifier: String? }`
+  - `struct DisplayObservation: Equatable { var bar: CGRect; var slots: [Slot] }`
+  - `enum DisplayState: Equatable { case collapsed, dividerDropped, itemsVisible }`
+- **Add `static func isOverflowed(_ slot: Slot, among slots: [Slot]) -> Bool`:** true when the slot is a chevron, has zero width, doesn't intersect its bar (callers pass the bar through the observation), or its frame overlaps another non-chevron slot's frame by more than 1pt horizontally.
+- **Add `static func state(of observation: DisplayObservation, dividerIdentifier: String, dividerSlotWidth: CGFloat, ownIdentifiers: Set<String>, ownSlotWidths: Set<CGFloat>) -> DisplayState`:**
+  - Sort slots by `minX`.
+  - `isOurs(s)`: `s.identifier` is in `ownIdentifiers`; when `s.identifier` is nil, the width is within 1pt of any value in `ownSlotWidths`.
+  - `isDivider(s)`: `s.identifier == dividerIdentifier`; when nil, the width is within 1pt of `dividerSlotWidth`.
+  - No divider slot gives `.dividerDropped`.
+  - Otherwise, collect ours that are not overflowed. If there are none, return `.collapsed` (the block sits in the overflow pile).
+  - Otherwise, if any non-ours, non-overflowed slot has `minX` below the smallest such `minX` of ours, return `.itemsVisible`. Else return `.collapsed`.
+- **Add `static func summary(_ states: [DisplayState]) -> DisplayState?`:** nil for an empty array. `dividerDropped` beats `itemsVisible`, which beats `collapsed`.
+- **Add `static func ladderLengths(caps: [CGFloat], margin: CGFloat = 16) -> (divider: CGFloat, spacers: [CGFloat])`:**
+  - `divider = clamp(min(caps) - margin, minimumUnit, maximumUnit)`.
+  - Spacers are the other caps minus the margin, clamped, sorted descending, and deduplicated when within 2pt of each other or of the divider, keeping at most `maximumSpacersPerDivider`.
+  - Empty caps return `(startUnit(screenWidths: []), [])`.
+- **Tests,** replacing the removed expectations:
+  - `state` covers:
+    - a block with nothing left of it gives collapsed;
+    - a missing divider gives dividerDropped;
+    - a 42pt non-ours slot left of the block gives itemsVisible;
+    - a chevron left of the block is ignored (collapsed);
+    - the divider inside an overlapping pile gives collapsed;
+    - a non-ours slot inside the pile left of the block is ignored (collapsed);
+    - a non-ours slot right of the block gives collapsed;
+    - identifier matching wins over a width clash.
+  - `ladderLengths(caps: [1496, 640, 264]) == (248, [1480, 624])`, `ladderLengths(caps: [264]) == (248, [])`, seven distinct caps give six spacers, and `ladderLengths(caps: [40]).divider == 40`.
+  - `summary`: `[collapsed, itemsVisible]` gives itemsVisible, `[collapsed, dividerDropped, itemsVisible]` gives dividerDropped, `[]` gives nil.
+- **Verify:** the task 2.2 command prints `PASS`.
+
+### Task R2: observe windows
+
+- **Target:** `MenuBarAgentWindows.swift`, `Shared/Utilities/AXHelpers.swift`.
+- **Signature:** `static func observe() -> [String: MenuBarLayoutMath.DisplayObservation]?`, keyed by the frame key as before.
+- **Validity gate:** return nil when:
+  - Accessibility isn't trusted;
+  - MenuBarAgent isn't running;
+  - the window count differs from `NSScreen.screens.count`;
+  - any window has zero children.
+- **Per child:**
+  - `frame`;
+  - `isChevron` by description;
+  - `identifier` is the `AXIdentifier` of the child's first child when that child's role is `AXButton`, otherwise nil.
+- Add `static func identifier(for:)` to `AXHelpers` using the `queue.sync` pattern. `description(for:)` stays.
+
+### Task R3: spacer lengths and identifiers
+
+- **Target:** `CollapseSpacers.swift`, `ControlItem.swift`.
+- **`CollapseSpacers`:**
+  - Replace `apply(activeCount:collapsed:unit:)` with `apply(lengths: [CGFloat])`: spacer `i` gets `lengths[i]` when present, else `restingLength`.
+  - New spacers set `button?.setAccessibilityIdentifier(autosaveName)`.
+  - Keep `ensureCount`, `removeAll`, the once-per-launch log and `restingLength = 1`.
+- **`ControlItem`:**
+  - The hidden and always-hidden control items set `statusItem.button?.setAccessibilityIdentifier(autosaveName)` when `MenuBarPlatform.usesMenuBarAgent`.
+  - In the sink, spacers get `lengths = CollapseController.shared.spacerLengths(for: widths)`, then `spacers.ensureCount(lengths.count)` and `spacers.apply(lengths: collapsed ? lengths : [])`. `collapsed` stays `isVisible && isAddedToMenuBar && state == .hideItems`.
+  - Add `func applyProbeLength(_ length: CGFloat)`. When the item is a divider in `.hideItems` it sets `statusItem.length = length` directly, without touching spacers.
+  - `removeFromMenuBar()` calls `spacers?.apply(lengths: [])`.
+  - The macOS ≤26 branch and both task 2.11 greps stay.
+
+### Task R4: collapse controller
+
+- **Target:** `CollapseController.swift`. In-memory only, never writes defaults, never calls `hide()`/`show()`.
+- **State, keyed by configuration key:**
+  - `caps: [String: [String: CGFloat]]` maps a display frame key to that display's honored divider length;
+  - `failures: [String: Int]`;
+  - `nextAllowedSearch: [String: Date]`;
+  - `backoff: [String: TimeInterval]`, starting at 20 s, doubling, capped at 300 s.
+  - Also `isSearching` and `pendingCheck`.
+- **`unit(for widths:)`:** the ladder divider of the key's caps when caps exist, else `startUnit(screenWidths:userOverride:)`, clamped by the override. While searching, it returns the length being probed.
+- **`spacerLengths(for widths:)`:** the ladder spacers when caps exist, else `[]`.
+- **`observeStates(dividers:)`:**
+  - Calls `MenuBarAgentWindows.observe()`.
+  - Nil means unknown: retry once after the settle delay, then return nil.
+  - Otherwise returns `[displayKey: DisplayState]` for the first divider. The hidden divider is used when collapsed, else the always-hidden one.
+  - Arguments: `dividerIdentifier` is the divider's autosave name; `dividerSlotWidth` is its current length + 16; `ownIdentifiers` and `ownSlotWidths` cover both dividers, all spacers and the Skein icon (`SItem`), whose width is its current length + 16.
+- **Search `search(dividers:)`, divider only, with spacers at rest:**
+  - Per display, track `low` (honored) and `high` (dropped).
+  - Start at `startUnit`. A probe sets the divider with `applyProbeLength`, waits 350 ms and observes. Displays not `dividerDropped` raise their `low` to the length; dropped ones lower their `high`.
+  - The next probe is `nextProbe(honored: low ?? minimumUnit, dropped: high)` for the display with the widest open bracket.
+  - Upward probing: a display whose `low` equals the probed length with no `high` probes again at `min(length * 2, maximumUnit)`, at most twice per search.
+  - Stop when no bracket is open or after 12 probes.
+  - `caps[key][display] = low` for every display with a `low`.
+  - When a display never had a `low`, log `collapse gave up screens=<key> display=<w>` and keep any previous caps.
+  - Then reapply every divider once, which applies the ladder. After `settleDelay` take one read-only observation and log exactly one line:
+    - `collapse honored screens=<key> divider=<d> spacers=<a>+<b>…` when the summary is collapsed;
+    - `collapse incomplete screens=<key> display=<w>` for each itemsVisible display;
+    - `collapse dropped screens=<key>` when the summary is dividerDropped.
+  - Each probe logs at `.debug`: `probe length=<l> display=<w> state=<s>`.
+- **`resolve(dividers:)`:** runs on setup, `hide()` and screen changes.
+  - When there are no collapsed dividers, return.
+  - When the key has caps, apply them (reapply) and run `check`.
+  - Otherwise, when backoff allows, run `search`.
+  - Coalesce while searching: set `pendingCheck`.
+- **`check(dividers:)`:** runs on app activation (debounced 400 ms) and after `resolve` applies cached caps. It is read-only.
+  - If any display is `dividerDropped` and `failures[key] < 3` and `Date() >= nextAllowedSearch[key]`, lower that display's cap by one `searchResolution` step: set `high` = the current divider length, then run `search`.
+  - A search that ends with any `dividerDropped` display increments `failures` and advances the backoff.
+  - A `collapse honored` result resets both.
+  - Unknown observations change nothing.
+- **`pendingCheck`:** after a search, run one `check`, never a search.
+- **Remove:** the before/after probe, `verifyCurrent`, the fall-to-`minimumUnit` path and the `pendingResolve -> resolve` tail call.
+
+### Task R5: harness
+
+- **Target:** `Scripts/VerifyMenuBar27.swift`.
+- **Add `ax-slots`:** for each MenuBarAgent window, print the frame, then for each child:
+  - its index, frame and chevron flag;
+  - whether a nested identifier is present;
+  - the nested identifier value only when it starts with the running script's own `ax-slots-` prefix or contains `Spacer`, `HItem`, `AHItem` or `SItem`.
+- **Change `cliff-probe <length>`:** add the item with identifier `verify-probe` and report `state=` per display using `MenuBarLayoutMath.state` semantics. The script can't import the app target, so inline the same overlap rule.
+- **Verify:** `xcrun swiftc -parse-as-library Scripts/VerifyMenuBar27.swift -o .ci-output/verify-menubar27` compiles with no warnings.
+
+### Task R6: implementer verification
+
+- Task 2.11 steps 1–7 stay, with these changes:
+  - step 6 also greps `CollapseSpacers.swift` for defaults writes;
+  - add `grep -c "verifyCurrent\|pendingResolve" Skein/MenuBar/MacOS27/CollapseController.swift`, which must print `0`;
+  - the self-review covers: no search from `check` without a dropped divider, the backoff and cap, no length change on an unknown observation, spacers at rest during probes, and the macOS ≤26 paths unchanged.
+
+### Revised task 2.12 pass criteria (coordinator)
+
+- **Before the run:**
+  - Remove the Karabiner/HItem position tie.
+  - Place the spacers right of `HItem` through CFPreferences read-modify-write after a backup. Spacers are created with autosave names, so they keep their table keys.
+- **Pass:**
+  - In every hidden capture on every display, no hidden-section icon is visible.
+  - The log has at least 4 `collapse honored` lines across configurations, 0 `collapse dropped`, 0 `collapse gave up`, and 0 `collapse incomplete` for the three-display configuration.
+  - Ten app switches while hidden produce no `probe` lines.
+
 ## Tasks
 
 ### Task 2.1 — Defaults keys

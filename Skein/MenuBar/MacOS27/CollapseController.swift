@@ -13,18 +13,37 @@ final class CollapseController {
 
     private static let settleDelay: Duration = .milliseconds(350)
 
-    private var honoredUnit: [String: CGFloat] = [:]
-    private(set) var currentUnit: CGFloat
-    private var isResolving = false
-    private var pendingResolve = false
-    private var resolvingKey: String?
+    /// Honored divider lengths keyed by screen configuration key, then by display frame key.
+    private var caps: [String: [String: CGFloat]] = [:]
+
+    /// Consecutive search failure counts keyed by screen configuration key.
+    private var failures: [String: Int] = [:]
+
+    /// The earliest date a search is next allowed for each configuration key.
+    private var nextAllowedSearch: [String: Date] = [:]
+
+    /// Backoff durations in seconds keyed by screen configuration key.
+    private var backoff: [String: TimeInterval] = [:]
+
+    /// Indicates whether a search is currently in progress.
+    private var isSearching = false
+
+    /// Indicates whether a check was requested while a search was running.
+    private var pendingCheck = false
+
+    /// The divider length currently being probed during an active search.
+    private var probingLength: CGFloat?
+
+    /// Weak reference to the shared app state.
+    private weak var appState: AppState?
+
+    /// Indicates whether observers have been installed.
     private var areObserversInstalled = false
+
+    /// Storage for Combine subscriptions.
     private var cancellables = Set<AnyCancellable>()
 
-    private init() {
-        let widths = NSScreen.screens.map(\.frame.width)
-        self.currentUnit = MenuBarLayoutMath.startUnit(screenWidths: widths)
-    }
+    private init() {}
 
     /// Returns the configuration key for the given display widths.
     private func configurationKey(for widths: [CGFloat]) -> String {
@@ -35,175 +54,330 @@ final class CollapseController {
             .joined(separator: "+")
     }
 
-    /// Returns the collapse unit for the given display widths.
+    /// Returns the collapse divider length for the given display widths.
     func unit(for widths: [CGFloat]) -> CGFloat {
-        let key = configurationKey(for: widths)
-        if
-            isResolving,
-            resolvingKey == key
-        {
-            return honoredUnit[key] ?? currentUnit
+        if isSearching, let probingLength {
+            return probingLength
         }
+        let key = configurationKey(for: widths)
         let userOverride = (Defaults.object(forKey: .collapseUnitOverride) as? NSNumber).map {
             CGFloat(truncating: $0)
         }
-        return honoredUnit[key] ?? MenuBarLayoutMath.startUnit(screenWidths: widths, userOverride: userOverride)
+        if let displayCaps = caps[key], !displayCaps.isEmpty {
+            var divider = MenuBarLayoutMath.ladderLengths(caps: Array(displayCaps.values)).divider
+            if
+                let userOverride,
+                userOverride > 0
+            {
+                divider = min(divider, userOverride)
+            }
+            return divider
+        }
+        return MenuBarLayoutMath.startUnit(screenWidths: widths, userOverride: userOverride)
     }
 
-    /// Resolves the honored unit by searching across attached displays.
-    func resolve(_ dividers: [ControlItem]) async {
-        let activeDividers = dividers.filter {
-            $0.isAddedToMenuBar && $0.isVisible && $0.state == .hideItems
+    /// Returns the spacer lengths for the given display widths.
+    func spacerLengths(for widths: [CGFloat]) -> [CGFloat] {
+        let key = configurationKey(for: widths)
+        if let displayCaps = caps[key], !displayCaps.isEmpty {
+            return MenuBarLayoutMath.ladderLengths(caps: Array(displayCaps.values)).spacers
         }
-        guard !activeDividers.isEmpty else {
-            return
-        }
-        if isResolving {
-            pendingResolve = true
-            return
-        }
-        isResolving = true
-        defer {
-            isResolving = false
+        return []
+    }
+
+    /// Observes the collapse states for attached displays using the active divider.
+    private func observeStates(dividers: [ControlItem]) async -> [String: MenuBarLayoutMath.DisplayState]? {
+        guard let divider = dividers.first(where: {
+            $0.identifier == .hidden && $0.isAddedToMenuBar && $0.isVisible && $0.state == .hideItems
+        }) ?? dividers.first(where: {
+            $0.identifier == .alwaysHidden && $0.isAddedToMenuBar && $0.isVisible && $0.state == .hideItems
+        }) ?? dividers.first else {
+            return nil
         }
 
-        var shouldRun = true
-        while shouldRun {
-            pendingResolve = false
-            let currentActive = dividers.filter {
-                $0.isAddedToMenuBar && $0.isVisible && $0.state == .hideItems
+        var obs = MenuBarAgentWindows.observe()
+        if obs == nil {
+            try? await Task.sleep(for: Self.settleDelay)
+            obs = MenuBarAgentWindows.observe()
+        }
+        guard let observations = obs else {
+            return nil
+        }
+
+        var ownIdentifiers: Set<String> = [
+            ControlItem.Identifier.skeinIcon.rawValue,
+            ControlItem.Identifier.hidden.rawValue,
+            ControlItem.Identifier.alwaysHidden.rawValue,
+        ]
+        for i in 0..<MenuBarLayoutMath.maximumSpacersPerDivider {
+            ownIdentifiers.insert("HItemSpacer\(i)")
+            ownIdentifiers.insert("AHItemSpacer\(i)")
+        }
+
+        var ownSlotWidths: Set<CGFloat> = []
+        for d in dividers where d.length > 0 {
+            ownSlotWidths.insert(d.length + MenuBarLayoutMath.slotPadding)
+        }
+        ownSlotWidths.insert(CollapseSpacers.restingLength + MenuBarLayoutMath.slotPadding)
+        let widths = NSScreen.screens.map(\.frame.width)
+        for spacerLength in spacerLengths(for: widths) {
+            ownSlotWidths.insert(spacerLength + MenuBarLayoutMath.slotPadding)
+        }
+        if let skeinItem = appState?.menuBarManager.section(withName: .visible)?.controlItem {
+            let skeinWidth = skeinItem.window?.frame.width ?? skeinItem.length
+            if skeinWidth > 0 {
+                ownSlotWidths.insert(skeinWidth + MenuBarLayoutMath.slotPadding)
             }
-            guard !currentActive.isEmpty else {
+        }
+
+        let dividerSlotWidth = (probingLength ?? divider.length) + MenuBarLayoutMath.slotPadding
+
+        var states: [String: MenuBarLayoutMath.DisplayState] = [:]
+        for (displayKey, observation) in observations {
+            states[displayKey] = MenuBarLayoutMath.state(
+                of: observation,
+                dividerIdentifier: divider.autosaveName,
+                dividerSlotWidth: dividerSlotWidth,
+                ownIdentifiers: ownIdentifiers,
+                ownSlotWidths: ownSlotWidths
+            )
+        }
+        return states
+    }
+
+    /// Searches for the honored divider lengths per display.
+    private func search(
+        dividers: [ControlItem],
+        initialHigh: [String: CGFloat] = [:]
+    ) async {
+        guard !dividers.isEmpty else {
+            return
+        }
+        guard let activeDivider = dividers.first(where: {
+            $0.identifier == .hidden && $0.isAddedToMenuBar && $0.isVisible && $0.state == .hideItems
+        }) ?? dividers.first(where: {
+            $0.identifier == .alwaysHidden && $0.isAddedToMenuBar && $0.isVisible && $0.state == .hideItems
+        }) ?? dividers.first else {
+            return
+        }
+        isSearching = true
+        defer {
+            isSearching = false
+            probingLength = nil
+        }
+
+        let widths = NSScreen.screens.map(\.frame.width)
+        let key = configurationKey(for: widths)
+        let userOverride = (Defaults.object(forKey: .collapseUnitOverride) as? NSNumber).map {
+            CGFloat(truncating: $0)
+        }
+        let start = MenuBarLayoutMath.startUnit(screenWidths: widths, userOverride: userOverride)
+
+        var low: [String: CGFloat] = [:]
+        var high: [String: CGFloat] = initialHigh
+        var upwardProbesRemaining: [String: Int] = [:]
+        var observedDisplayKeys = Set<String>()
+
+        var currentLength = start
+        var probeCount = 0
+
+        while probeCount < 12 {
+            probeCount += 1
+            probingLength = currentLength
+            activeDivider.applyProbeLength(currentLength)
+            try? await Task.sleep(for: Self.settleDelay)
+
+            guard let states = await observeStates(dividers: dividers) else {
                 break
             }
-            await runSearch(for: currentActive, initialHigh: nil)
-            shouldRun = pendingResolve
-        }
-    }
 
-    /// Probes a single divider length across all displays.
-    private func probe(_ length: CGFloat, dividers: [ControlItem]) async -> Bool {
-        let slotWidth = length + MenuBarLayoutMath.slotPadding
-        let before = MenuBarAgentWindows.observe(slotWidth: slotWidth)
-        currentUnit = length
+            for (dKey, state) in states {
+                observedDisplayKeys.insert(dKey)
+                let displayWidth = dKey.split(separator: ",").last.flatMap { Int($0) } ?? 0
+                Logger.collapse.debug(
+                    "probe length=\(Int(currentLength)) display=\(displayWidth) state=\(state.rawValue)"
+                )
+                if state != .dividerDropped {
+                    low[dKey] = max(low[dKey] ?? 0, currentLength)
+                } else {
+                    let prevHigh = high[dKey] ?? currentLength
+                    high[dKey] = min(prevHigh, currentLength)
+                }
+            }
+
+            var bestBracketWidth: CGFloat = 0
+            var candidateLength: CGFloat?
+
+            for dKey in observedDisplayKeys {
+                let remainingUpward = upwardProbesRemaining[dKey] ?? 2
+                if
+                    high[dKey] == nil,
+                    let currentLow = low[dKey],
+                    currentLow == currentLength,
+                    remainingUpward > 0
+                {
+                    let nextUpward = min(currentLow * 2, MenuBarLayoutMath.maximumUnit)
+                    let bracket = nextUpward - currentLow
+                    if bracket > bestBracketWidth {
+                        bestBracketWidth = bracket
+                        candidateLength = nextUpward
+                    }
+                } else if let currentHigh = high[dKey] {
+                    let currentLow = low[dKey] ?? MenuBarLayoutMath.minimumUnit
+                    if let nextMid = MenuBarLayoutMath.nextProbe(honored: currentLow, dropped: currentHigh) {
+                        let bracket = currentHigh - currentLow
+                        if bracket > bestBracketWidth {
+                            bestBracketWidth = bracket
+                            candidateLength = nextMid
+                        }
+                    }
+                }
+            }
+
+            guard let next = candidateLength else {
+                break
+            }
+
+            for dKey in observedDisplayKeys {
+                let remainingUpward = upwardProbesRemaining[dKey] ?? 2
+                if
+                    high[dKey] == nil,
+                    let currentLow = low[dKey],
+                    currentLow == currentLength,
+                    remainingUpward > 0,
+                    min(currentLow * 2, MenuBarLayoutMath.maximumUnit) == next
+                {
+                    upwardProbesRemaining[dKey] = remainingUpward - 1
+                    break
+                }
+            }
+
+            currentLength = next
+        }
+
+        if caps[key] == nil {
+            caps[key] = [:]
+        }
+        for dKey in observedDisplayKeys {
+            let displayWidth = dKey.split(separator: ",").last.flatMap { Int($0) } ?? 0
+            if let lowVal = low[dKey] {
+                caps[key]?[dKey] = lowVal
+            } else {
+                Logger.collapse.notice("collapse gave up screens=\(key) display=\(displayWidth)")
+            }
+        }
+
+        isSearching = false
+        probingLength = nil
         for divider in dividers {
             divider.reapplyCollapseLength()
         }
+
         try? await Task.sleep(for: Self.settleDelay)
-        let after = MenuBarAgentWindows.observe(slotWidth: slotWidth)
-        return MenuBarLayoutMath.isHonored(
-            before: before,
-            after: after,
-            expectedIncrease: dividers.count
-        )
-    }
 
-    /// Executes the binary search for an honored collapse unit.
-    private func runSearch(for dividers: [ControlItem], initialHigh: CGFloat?) async {
-        let widths = NSScreen.screens.map(\.frame.width)
-        let key = configurationKey(for: widths)
+        let finalStates = await observeStates(dividers: dividers)
+        let summaryState = finalStates.flatMap { MenuBarLayoutMath.summary(Array($0.values)) }
 
-        // Computed before this key is marked as resolving, so a new screen
-        // configuration starts from its own cached or start unit rather than
-        // the unit last probed for the previous configuration.
-        var nextLength: CGFloat?
-        if let initialHigh {
-            nextLength = MenuBarLayoutMath.nextProbe(
-                honored: MenuBarLayoutMath.minimumUnit,
-                dropped: initialHigh
+        if summaryState == .collapsed {
+            failures[key] = 0
+            backoff[key] = 20
+            nextAllowedSearch.removeValue(forKey: key)
+
+            let displayCaps = caps[key].map { Array($0.values) } ?? []
+            let ladder = MenuBarLayoutMath.ladderLengths(caps: displayCaps)
+            let spacerString = ladder.spacers.map { "\(Int($0))" }.joined(separator: "+")
+            Logger.collapse.notice(
+                "collapse honored screens=\(key) divider=\(Int(ladder.divider)) spacers=\(spacerString)"
             )
-        } else {
-            nextLength = unit(for: widths)
-        }
+        } else if summaryState == .dividerDropped {
+            failures[key, default: 0] += 1
+            let currentBackoff = backoff[key] ?? 20
+            let nextBackoff = min(currentBackoff * 2, 300)
+            backoff[key] = nextBackoff
+            nextAllowedSearch[key] = Date().addingTimeInterval(nextBackoff)
 
-        resolvingKey = key
-        defer {
-            resolvingKey = nil
-        }
-
-        var low: CGFloat?
-        var high: CGFloat? = initialHigh
-        var probeCount = 0
-
-        while
-            let length = nextLength,
-            probeCount < 8
-        {
-            probeCount += 1
-            let honored = await probe(length, dividers: dividers)
-            if honored {
-                low = length
-                if high == nil {
-                    break
+            Logger.collapse.notice("collapse dropped screens=\(key)")
+        } else if summaryState == .itemsVisible {
+            if let finalStates {
+                for (dKey, st) in finalStates where st == .itemsVisible {
+                    let displayWidth = dKey.split(separator: ",").last.flatMap { Int($0) } ?? 0
+                    Logger.collapse.notice("collapse incomplete screens=\(key) display=\(displayWidth)")
                 }
-            } else {
-                high = length
-            }
-            guard let currentHigh = high else {
-                break
-            }
-            nextLength = MenuBarLayoutMath.nextProbe(
-                honored: low ?? MenuBarLayoutMath.minimumUnit,
-                dropped: currentHigh
-            )
-        }
-
-        if low == nil {
-            probeCount += 1
-            let honored = await probe(MenuBarLayoutMath.minimumUnit, dividers: dividers)
-            if honored {
-                low = MenuBarLayoutMath.minimumUnit
             }
         }
 
-        if let low {
-            honoredUnit[key] = low
-            currentUnit = low
-            for divider in dividers {
-                divider.reapplyCollapseLength()
-            }
-            Logger.collapse.notice("collapse self-test honored screens=\(key) unit=\(Int(low)) probes=\(probeCount)")
-            let widest = widths.max() ?? 0
-            let spacers = MenuBarLayoutMath.spacerCount(widestWidth: widest, unit: low)
-            if !MenuBarLayoutMath.coversWidest(widestWidth: widest, unit: low, spacers: spacers) {
-                Logger.collapse.notice("collapse incomplete widest=\(Int(widest)) unit=\(Int(low)) spacers=\(spacers)")
-            }
-        } else {
-            currentUnit = MenuBarLayoutMath.minimumUnit
-            for divider in dividers {
-                divider.reapplyCollapseLength()
-            }
-            Logger.collapse.notice("collapse self-test failed screens=\(key)")
+        if pendingCheck {
+            pendingCheck = false
+            await check(dividers)
         }
     }
 
-    /// Verifies the current collapse unit and re-searches downwards if dropped.
-    func verifyCurrent(_ dividers: [ControlItem]) async {
-        let activeDividers = dividers.filter {
+    /// Resolves the honored unit by applying cached caps or running a search.
+    func resolve(_ dividers: [ControlItem]) async {
+        let collapsedDividers = dividers.filter {
             $0.isAddedToMenuBar && $0.isVisible && $0.state == .hideItems
         }
-        guard !activeDividers.isEmpty else {
+        guard !collapsedDividers.isEmpty else {
             return
         }
-        if isResolving {
-            pendingResolve = true
+        if isSearching {
+            pendingCheck = true
             return
         }
         let widths = NSScreen.screens.map(\.frame.width)
         let key = configurationKey(for: widths)
-        // Hold the resolving flag across the probe too, so a resolution requested
-        // while the probe settles waits instead of changing lengths concurrently.
-        isResolving = true
-        resolvingKey = key
-        let honored = await probe(currentUnit, dividers: activeDividers)
-        if !honored {
-            honoredUnit.removeValue(forKey: key)
-            await runSearch(for: activeDividers, initialHigh: currentUnit)
+        if let displayCaps = caps[key], !displayCaps.isEmpty {
+            for divider in collapsedDividers {
+                divider.reapplyCollapseLength()
+            }
+            await check(collapsedDividers)
+        } else {
+            let now = Date()
+            let allowedDate = nextAllowedSearch[key] ?? now
+            if now >= allowedDate {
+                await search(dividers: collapsedDividers)
+            }
         }
-        resolvingKey = nil
-        isResolving = false
-        if pendingResolve {
-            await resolve(dividers)
+    }
+
+    /// Read-only check to verify whether any display dropped its divider.
+    func check(_ dividers: [ControlItem]) async {
+        let collapsedDividers = dividers.filter {
+            $0.isAddedToMenuBar && $0.isVisible && $0.state == .hideItems
+        }
+        guard !collapsedDividers.isEmpty else {
+            return
+        }
+        if isSearching {
+            pendingCheck = true
+            return
+        }
+        guard let states = await observeStates(dividers: collapsedDividers) else {
+            return
+        }
+        let widths = NSScreen.screens.map(\.frame.width)
+        let key = configurationKey(for: widths)
+        let currentFailures = failures[key] ?? 0
+        let now = Date()
+        let allowedDate = nextAllowedSearch[key] ?? now
+        let hasDropped = states.values.contains(.dividerDropped)
+        if
+            hasDropped,
+            currentFailures < 3,
+            now >= allowedDate
+        {
+            let currentDividerLength = unit(for: widths)
+            var initialHigh: [String: CGFloat] = [:]
+            for (dKey, state) in states where state == .dividerDropped {
+                initialHigh[dKey] = currentDividerLength
+                if let existingCap = caps[key]?[dKey] {
+                    caps[key]?[dKey] = max(
+                        existingCap - MenuBarLayoutMath.searchResolution,
+                        MenuBarLayoutMath.minimumUnit
+                    )
+                }
+            }
+            await search(dividers: collapsedDividers, initialHigh: initialHigh)
         }
     }
 
@@ -213,6 +387,7 @@ final class CollapseController {
             return
         }
         areObserversInstalled = true
+        self.appState = appState
 
         NSWorkspace.shared.notificationCenter
             .publisher(for: NSWorkspace.didActivateApplicationNotification)
@@ -229,7 +404,7 @@ final class CollapseController {
                     appState.menuBarManager.section(withName: .alwaysHidden)?.controlItem,
                 ].compactMap { $0 }
                 Task {
-                    await self.verifyCurrent(dividers)
+                    await self.check(dividers)
                 }
             }
             .store(in: &cancellables)
