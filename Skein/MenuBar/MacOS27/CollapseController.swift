@@ -154,6 +154,14 @@ final class CollapseController {
         return states
     }
 
+    /// A Boolean value that indicates whether the divider is still collapsed in the menu bar.
+    ///
+    /// A probe or fill that runs while the user shows the section would read every
+    /// length as dropped, so both stop as soon as this turns false.
+    private func isCollapsed(_ divider: ControlItem) -> Bool {
+        divider.isAddedToMenuBar && divider.isVisible && divider.state == .hideItems
+    }
+
     /// Searches for the honored divider lengths per display.
     private func search(
         dividers: [ControlItem],
@@ -178,6 +186,8 @@ final class CollapseController {
 
         let widths = NSScreen.screens.map(\.frame.width)
         let key = configurationKey(for: widths)
+        let previousCaps = caps[key]
+        let previousFills = fills[key]
         fills[key] = nil
         let userOverride = (Defaults.object(forKey: .collapseUnitOverride) as? NSNumber).map {
             CGFloat(truncating: $0)
@@ -191,6 +201,7 @@ final class CollapseController {
 
         var currentLength = start
         var probeCount = 0
+        var isInterrupted = false
 
         while probeCount < 12 {
             probeCount += 1
@@ -198,7 +209,11 @@ final class CollapseController {
             activeDivider.applyProbeLength(currentLength)
             try? await Task.sleep(for: Self.settleDelay)
 
-            guard let states = await observeStates(dividers: dividers) else {
+            guard
+                isCollapsed(activeDivider),
+                let states = await observeStates(dividers: dividers)
+            else {
+                isInterrupted = true
                 break
             }
 
@@ -264,6 +279,19 @@ final class CollapseController {
             }
 
             currentLength = next
+        }
+
+        if isInterrupted {
+            // The section was shown or the observation became unknown: keep what was
+            // known before this search and change nothing else.
+            caps[key] = previousCaps
+            fills[key] = previousFills
+            probingLength = nil
+            for divider in dividers {
+                divider.reapplyCollapseLength()
+            }
+            Logger.collapse.debug("collapse search interrupted screens=\(key)")
+            return
         }
 
         if caps[key] == nil {
@@ -334,6 +362,7 @@ final class CollapseController {
 
         var candidate = bounds.upper
         var probeCount = 0
+        let previousFills = fills[key]
 
         while
             (ladder.spacers.count + (fills[key]?.count ?? 0)) < MenuBarLayoutMath.maximumSpacersPerDivider,
@@ -346,14 +375,17 @@ final class CollapseController {
             }
             try? await Task.sleep(for: Self.settleDelay)
 
-            guard let states = await observeStates(dividers: dividers) else {
-                let mid = (candidate + bounds.lower) / 2
-                let next = (mid / MenuBarLayoutMath.searchResolution).rounded(.down) * MenuBarLayoutMath.searchResolution
-                if next < bounds.lower {
-                    break
+            guard
+                dividers.allSatisfy(isCollapsed),
+                let states = await observeStates(dividers: dividers)
+            else {
+                fills[key] = previousFills
+                probeFill = nil
+                for divider in dividers {
+                    divider.reapplyCollapseLength()
                 }
-                candidate = next
-                continue
+                Logger.collapse.debug("collapse fill interrupted screens=\(key)")
+                return
             }
 
             for (dKey, state) in states {
@@ -435,6 +467,7 @@ final class CollapseController {
             for divider in collapsedDividers {
                 divider.reapplyCollapseLength()
             }
+            try? await Task.sleep(for: Self.settleDelay)
             await check(collapsedDividers)
         } else {
             let now = Date()
@@ -471,17 +504,10 @@ final class CollapseController {
             currentFailures < 3,
             now >= allowedDate
         {
-            fills[key] = nil
             let currentDividerLength = unit(for: widths)
             var initialHigh: [String: CGFloat] = [:]
             for (dKey, state) in states where state == .dividerDropped {
                 initialHigh[dKey] = currentDividerLength
-                if let existingCap = caps[key]?[dKey] {
-                    caps[key]?[dKey] = max(
-                        existingCap - MenuBarLayoutMath.searchResolution,
-                        MenuBarLayoutMath.minimumUnit
-                    )
-                }
             }
             await search(dividers: collapsedDividers, initialHigh: initialHigh)
         }
