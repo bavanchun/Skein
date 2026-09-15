@@ -99,6 +99,10 @@ enum DiagnosticsMenu {
             Task { await DiagnosticsMenu.spikeSwapTwoItems() }
         }
 
+        @objc func dumpItemCache() {
+            DiagnosticsMenu.dumpItemCache()
+        }
+
         @objc func spikeLegacySeed() {
             Task { await DiagnosticsMenu.spikeLegacySeed() }
         }
@@ -111,6 +115,38 @@ enum DiagnosticsMenu {
     // MARK: Actions
 
     private static func dumpItemCache() {
+        guard let manager = MenuBarItemManager.shared else {
+            logger.notice("diag cache manager=nil")
+            return
+        }
+        let cache = manager.itemCache
+        let visibleCount = cache[.visible].count
+        let hiddenCount = cache[.hidden].count
+        let alwaysHiddenCount = cache[.alwaysHidden].count
+        let groupedCount = cache.allItems.filter { item in
+            if case .accessibility(let ax) = item.backing {
+                return ax.isGroupedIdentity
+            }
+            return false
+        }.count
+
+        logger.notice(
+            "diag cache visible=\(visibleCount) hidden=\(hiddenCount) alwaysHidden=\(alwaysHiddenCount) grouped=\(groupedCount)"
+        )
+
+        let table = LayoutTableFile.readFromDisk() ?? LayoutTableFile.readViaPreferences()
+        let hKey = "status:\(Constants.bundleIdentifier)::\(ControlItem.Identifier.hidden.rawValue)"
+        let hiddenKeysCount: Int
+        if let table, let hDistance = table[hKey] {
+            hiddenKeysCount = table.filter { key, distance in
+                key.hasPrefix("status:") && distance > hDistance
+            }.count
+        } else {
+            hiddenKeysCount = 0
+        }
+
+        logger.notice("diag table hiddenKeys=\(hiddenKeysCount)")
+
         let widths = NSScreen.screens.map(\.frame.width)
         let spacers = CollapseController.shared.spacerLengths(for: widths)
         let length = spacers.first ?? 0

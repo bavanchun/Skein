@@ -97,6 +97,24 @@ final class MenuBarItemManager: ObservableObject {
     /// The manager's menu bar item cache.
     @Published private(set) var itemCache = ItemCache()
 
+    /// Weak reference to the shared manager for diagnostics and getters.
+    private(set) static weak var shared: MenuBarItemManager?
+
+    /// Snapshot provider for synchronous menu bar item requests on macOS 27.
+    static var sharedSnapshotProvider: (@MainActor () -> [MenuBarItem])?
+
+    /// Snapshot of menu bar items enumerated via Accessibility on macOS 27.
+    private(set) var accessibilitySnapshot: [MenuBarItem] = []
+
+    /// A Boolean value that indicates whether the divider order warning has been logged.
+    private static var didLogAlwaysHiddenRightOfHidden = false
+
+    /// Refreshes the accessibility snapshot off the main thread.
+    func refreshAccessibilitySnapshot() async {
+        let items = await Task.detached { AccessibilityMenuBarItems.current() }.value
+        accessibilitySnapshot = items
+    }
+
     /// The shared app state.
     private(set) weak var appState: AppState?
 
@@ -166,6 +184,10 @@ final class MenuBarItemManager: ObservableObject {
 
     /// Sets up the manager.
     func performSetup() {
+        Self.shared = self
+        Self.sharedSnapshotProvider = { [weak self] in
+            self?.accessibilitySnapshot ?? []
+        }
         configureCancellables()
     }
 
@@ -310,11 +332,106 @@ extension MenuBarItemManager {
         itemCache = cache
     }
 
+    /// Caches menu bar items from Accessibility enumeration and the macOS 27 layout table.
+    func cacheItemsFromAccessibility() async {
+        await refreshAccessibilitySnapshot()
+        let items = accessibilitySnapshot
+
+        let table = LayoutTableFile.readFromDisk() ?? LayoutTableFile.readViaPreferences()
+        let hKey = "status:\(Constants.bundleIdentifier)::\(ControlItem.Identifier.hidden.rawValue)"
+        let ahKey = "status:\(Constants.bundleIdentifier)::\(ControlItem.Identifier.alwaysHidden.rawValue)"
+
+        var hDistance = table?[hKey]
+        var ahDistance = table?[ahKey]
+        if
+            hDistance == nil || ahDistance == nil,
+            let table
+        {
+            for (key, distance) in table {
+                if
+                    let tableKey = MenuBarLayoutMath.LayoutTableKey(rawKey: key),
+                    tableKey.bundleID == Constants.bundleIdentifier
+                {
+                    if tableKey.name == ControlItem.Identifier.hidden.rawValue, hDistance == nil {
+                        hDistance = distance
+                    } else if tableKey.name == ControlItem.Identifier.alwaysHidden.rawValue, ahDistance == nil {
+                        ahDistance = distance
+                    }
+                }
+            }
+        }
+
+        if
+            let ahDistance,
+            let hDistance,
+            ahDistance < hDistance,
+            !Self.didLogAlwaysHiddenRightOfHidden
+        {
+            Self.didLogAlwaysHiddenRightOfHidden = true
+            Logger.itemManager.warning("always-hidden divider right of hidden divider")
+        }
+
+        var newCache = ItemCache()
+        let hItem = items.first(where: { $0.info == .hiddenControlItem })
+        let ahItem = items.first(where: { $0.info == .alwaysHiddenControlItem })
+
+        for item in items {
+            if item.info.namespace == .skein {
+                continue
+            }
+            if let title = item.title, title.contains("Spacer") {
+                continue
+            }
+            if item.info.title.contains("Spacer") {
+                continue
+            }
+
+            let distance: Double
+            if
+                case .accessibility(let ax) = item.backing,
+                let key = ax.tableKey,
+                let tableDist = table?[key]
+            {
+                distance = tableDist
+            } else if let hItem, item.frame.maxX <= hItem.frame.minX {
+                if let ahItem, item.frame.maxX <= ahItem.frame.minX {
+                    distance = (ahDistance ?? (hDistance ?? 0) + 200) + 1
+                } else {
+                    distance = (hDistance ?? 0) + 1
+                }
+            } else {
+                distance = 0
+            }
+
+            let section = MenuBarLayoutMath.section(
+                forDistance: distance,
+                hiddenDivider: hDistance,
+                alwaysHiddenDivider: ahDistance
+            )
+            switch section {
+            case .visible:
+                newCache[.visible].append(item)
+            case .hidden:
+                newCache[.hidden].append(item)
+            case .alwaysHidden:
+                newCache[.alwaysHidden].append(item)
+            }
+        }
+
+        if itemCache != newCache {
+            itemCache = newCache
+        }
+
+        Logger.itemManager.debug(
+            "ax cache visible=\(newCache[.visible].count) hidden=\(newCache[.hidden].count) alwaysHidden=\(newCache[.alwaysHidden].count)"
+        )
+    }
+
     /// Caches the current menu bar items if needed, ensuring that the control
     /// items are in the correct order.
     func cacheItemsIfNeeded() async {
-        // Window-based caching cannot see items on macOS 27; Accessibility enumeration replaces it.
-        guard !MenuBarPlatform.usesMenuBarAgent else {
+        if MenuBarPlatform.usesMenuBarAgent {
+            await cacheItemsFromAccessibility()
             return
         }
         do {
@@ -588,7 +705,13 @@ extension MenuBarItemManager {
     ///
     /// - Parameter item: The item to return the current frame for.
     private func getCurrentFrame(for item: MenuBarItem) -> CGRect? {
-        guard let frame = Bridging.getWindowFrame(for: item.window.windowID) else {
+        if case .accessibility = item.backing {
+            return item.frame
+        }
+        guard
+            let windowID = item.windowID,
+            let frame = Bridging.getWindowFrame(for: windowID)
+        else {
             Logger.itemManager.error("Couldn't get current frame for \(item.logString)")
             return nil
         }
@@ -596,6 +719,7 @@ extension MenuBarItemManager {
     }
 
     /// Returns the end point for moving an item to the given destination.
+
     ///
     /// - Parameter destination: The destination to return the end point for.
     private func getEndPoint(for destination: MoveDestination) throws -> CGPoint {
@@ -1302,23 +1426,27 @@ extension MenuBarItemManager {
     ///     clicked once movement is finished.
     ///   - mouseButton: The mouse button of the click.
     func tempShowItem(_ item: MenuBarItem, clickWhenFinished: Bool, mouseButton: CGMouseButton) {
-        if
-            let latest = MenuBarItem(windowID: item.windowID),
-            latest.isOnScreen
-        {
-            if clickWhenFinished {
-                Task {
-                    do {
-                        try await click(item: latest, with: mouseButton)
-                    } catch {
-                        Logger.itemManager.error("ERROR: \(error)")
+        if case .window = item.backing {
+            if
+                let windowID = item.windowID,
+                let latest = MenuBarItem(windowID: windowID),
+                latest.isOnScreen
+            {
+                if clickWhenFinished {
+                    Task {
+                        do {
+                            try await click(item: latest, with: mouseButton)
+                        } catch {
+                            Logger.itemManager.error("ERROR: \(error)")
+                        }
                     }
                 }
+                return
             }
-            return
         }
 
         guard
+
             let appState,
             let screen = NSScreen.main,
             let applicationMenuFrame = appState.menuBarManager.getApplicationMenuFrame(for: screen.displayID)
@@ -1651,9 +1779,13 @@ private extension CGEvent {
 
         let targetPID = Int64(pid)
         let userData = Int64(truncatingIfNeeded: Int(bitPattern: ObjectIdentifier(event)))
-        let windowID = Int64(item.windowID)
+        guard let itemWindowID = item.windowID else {
+            return nil
+        }
+        let windowID = Int64(itemWindowID)
 
         event.setIntegerValueField(.eventTargetUnixProcessID, value: targetPID)
+
         event.setIntegerValueField(.eventSourceUserData, value: userData)
         event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: windowID)
         event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: windowID)

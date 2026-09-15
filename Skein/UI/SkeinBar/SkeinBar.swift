@@ -332,11 +332,12 @@ private struct SkeinBarContentView: View {
         } else {
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
-                    ForEach(items, id: \.windowID) { item in
+                    ForEach(items, id: \.info) { item in
                         SkeinBarItemView(item: item, closePanel: closePanel)
                     }
                 }
             }
+
             .environment(\.isScrollEnabled, frame.width == imageCache.screen?.frame.width)
             .defaultScrollAnchor(.trailing)
             .scrollIndicatorsFlash(trigger: scrollIndicatorsFlashTrigger)

@@ -9,8 +9,50 @@ import Cocoa
 
 /// A representation of an item in the menu bar.
 struct MenuBarItem {
-    /// The item's window.
-    let window: WindowInfo
+    /// An accessibility-based backing for a menu bar item on macOS 27 and later.
+    struct AccessibilityBacking: Hashable {
+        /// The underlying accessibility element representing the item.
+        let element: AXUIElement
+
+        /// The frame of the item in CoreGraphics screen coordinates.
+        let frame: CGRect
+
+        /// The process identifier of the application that created the item.
+        let pid: pid_t
+
+        /// The bundle identifier of the owning application, or `nil` if unknown.
+        let bundleID: String?
+
+        /// The raw layout table key for the item, or `nil` if unpaired.
+        let tableKey: String?
+
+        /// A Boolean value that indicates whether the item's identity was grouped
+        /// due to untrustworthy frames or count mismatch.
+        let isGroupedIdentity: Bool
+
+        static func == (lhs: AccessibilityBacking, rhs: AccessibilityBacking) -> Bool {
+            if
+                let lhsKey = lhs.tableKey,
+                let rhsKey = rhs.tableKey
+            {
+                return lhsKey == rhsKey
+            }
+            return lhs.pid == rhs.pid && lhs.frame == rhs.frame
+        }
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(tableKey ?? "\(pid)")
+        }
+    }
+
+    /// The backing storage of the menu bar item.
+    enum Backing: Hashable {
+        case window(WindowInfo)
+        case accessibility(AccessibilityBacking)
+    }
+
+    /// The item's backing representation.
+    let backing: Backing
 
     /// The menu bar item info associated with this item.
     let info: MenuBarItemInfo
@@ -22,24 +64,69 @@ struct MenuBarItem {
     /// is resolved out of process and may be `nil` if resolution failed.
     let sourcePID: pid_t?
 
-    /// The identifier of the item's window.
-    var windowID: CGWindowID {
-        window.windowID
+    /// The item's window, or `nil` if backed by Accessibility.
+    var window: WindowInfo? {
+        switch backing {
+        case .window(let window): window
+        case .accessibility: nil
+        }
     }
 
-    /// The frame of the item's window.
+    /// The identifier of the item's window, or `nil` if backed by Accessibility.
+    var windowID: CGWindowID? {
+        window?.windowID
+    }
+
+    /// The frame of the item.
     var frame: CGRect {
-        window.frame
+        switch backing {
+        case .window(let window): window.frame
+        case .accessibility(let backing): backing.frame
+        }
     }
 
-    /// The title of the item's window.
+    /// The title of the item.
     var title: String? {
-        window.title
+        switch backing {
+        case .window(let window):
+            window.title
+        case .accessibility(let backing):
+            if
+                let tableKey = backing.tableKey,
+                let key = MenuBarLayoutMath.LayoutTableKey(rawKey: tableKey)
+            {
+                key.name
+            } else {
+                info.title.isEmpty ? nil : info.title
+            }
+        }
     }
 
     /// A Boolean value that indicates whether the item is on screen.
     var isOnScreen: Bool {
-        window.isOnScreen
+        switch backing {
+        case .window(let window):
+            return window.isOnScreen
+        case .accessibility(let backing):
+
+            guard
+                backing.frame.width > 0,
+                backing.frame.height > 0,
+                let primaryScreen = NSScreen.screens.first
+            else {
+                return false
+            }
+            let primaryHeight = primaryScreen.frame.height
+            return NSScreen.screens.contains { screen in
+                let cgFrame = CGRect(
+                    x: screen.frame.origin.x,
+                    y: primaryHeight - screen.frame.origin.y - screen.frame.height,
+                    width: screen.frame.width,
+                    height: screen.frame.height
+                )
+                return cgFrame.intersects(backing.frame)
+            }
+        }
     }
 
     /// A Boolean value that indicates whether the item can be moved.
@@ -56,7 +143,10 @@ struct MenuBarItem {
 
     /// The process identifier of the application that owns the item.
     var ownerPID: pid_t {
-        window.ownerPID
+        switch backing {
+        case .window(let window): window.ownerPID
+        case .accessibility(let backing): backing.pid
+        }
     }
 
     /// The name of the application that owns the item.
@@ -64,15 +154,21 @@ struct MenuBarItem {
     /// This may have a value when ``owningApplication`` does not have
     /// a localized name.
     var ownerName: String? {
-        window.ownerName
+        switch backing {
+        case .window(let window):
+            window.ownerName
+        case .accessibility(let backing):
+            NSRunningApplication(processIdentifier: backing.pid)?.localizedName
+        }
     }
 
     /// The application that owns the item.
     var owningApplication: NSRunningApplication? {
-        window.owningApplication
+        NSRunningApplication(processIdentifier: ownerPID)
     }
 
     /// A name associated with the item that is suited for display to
+
     /// the user.
     var displayName: String {
         var fallback: String { "Unknown" }
@@ -118,13 +214,25 @@ struct MenuBarItem {
     /// A Boolean value that indicates whether the item is currently
     /// in the menu bar.
     var isCurrentlyInMenuBar: Bool {
-        let list = Set(Bridging.getWindowList(option: .menuBarItems))
-        return list.contains(windowID)
+        switch backing {
+        case .window(let window):
+            let list = Set(Bridging.getWindowList(option: .menuBarItems))
+            return list.contains(window.windowID)
+        case .accessibility:
+            return isOnScreen
+        }
     }
 
     /// A string to use for logging purposes.
     var logString: String {
         String(describing: info)
+    }
+
+    /// Creates a menu bar item backed by Accessibility.
+    init(accessibility: AccessibilityBacking, info: MenuBarItemInfo) {
+        self.backing = .accessibility(accessibility)
+        self.info = info
+        self.sourcePID = accessibility.pid
     }
 
     /// Creates a menu bar item from the given window.
@@ -133,7 +241,7 @@ struct MenuBarItem {
     /// it is a valid menu bar item window. Only call this initializer if you are
     /// certain that the window is valid.
     private init(uncheckedItemWindow itemWindow: WindowInfo) {
-        self.window = itemWindow
+        self.backing = .window(itemWindow)
         self.info = MenuBarItemInfo(uncheckedItemWindow: itemWindow)
         self.sourcePID = itemWindow.ownerPID
     }
@@ -145,12 +253,13 @@ struct MenuBarItem {
     /// certain that the window is valid.
     @available(macOS 26.0, *)
     private init(uncheckedItemWindow itemWindow: WindowInfo, sourcePID: pid_t?) {
-        self.window = itemWindow
+        self.backing = .window(itemWindow)
         self.info = MenuBarItemInfo(uncheckedItemWindow: itemWindow, sourcePID: sourcePID)
         self.sourcePID = sourcePID
     }
 
     /// Creates a menu bar item.
+
     ///
     /// The parameters passed into this initializer are verified during the menu
     /// bar item's creation. If `itemWindow` does not represent a menu bar item,
@@ -210,7 +319,34 @@ extension MenuBarItem {
     ///   - activeSpaceOnly: A Boolean value that indicates whether only the menu bar items
     ///     that are on the active space should be returned.
     static func getMenuBarItems(on display: CGDirectDisplayID? = nil, onScreenOnly: Bool, activeSpaceOnly: Bool) -> [MenuBarItem] {
-        legacyMenuBarItems(on: display, onScreenOnly: onScreenOnly, activeSpaceOnly: activeSpaceOnly)
+        if MenuBarPlatform.usesMenuBarAgent {
+            guard Thread.isMainThread else {
+                Logger(category: "MenuBarItem").error("sync getMenuBarItems off main on macOS 27")
+                return []
+            }
+            let snapshot = MainActor.assumeIsolated {
+                MenuBarItemManager.sharedSnapshotProvider?() ?? []
+            }
+            return filterAccessibilityItems(snapshot, on: display, onScreenOnly: onScreenOnly)
+        }
+        return legacyMenuBarItems(on: display, onScreenOnly: onScreenOnly, activeSpaceOnly: activeSpaceOnly)
+    }
+
+    /// Filters accessibility-backed items by display bounds and screen visibility.
+    private static func filterAccessibilityItems(
+        _ items: [MenuBarItem],
+        on display: CGDirectDisplayID?,
+        onScreenOnly: Bool
+    ) -> [MenuBarItem] {
+        var result = items
+        if let display {
+            let bounds = CGDisplayBounds(display)
+            result = result.filter { $0.frame.intersects(bounds) }
+        }
+        if onScreenOnly {
+            result = result.filter { $0.isOnScreen }
+        }
+        return result
     }
 
     /// Returns an array of the current menu bar items, taking the process that owns
@@ -248,6 +384,11 @@ extension MenuBarItem {
     ///   - activeSpaceOnly: A Boolean value that indicates whether only the menu bar items
     ///     that are on the active space should be returned.
     static func getMenuBarItems(on display: CGDirectDisplayID? = nil, onScreenOnly: Bool, activeSpaceOnly: Bool) async -> [MenuBarItem] {
+        if MenuBarPlatform.usesMenuBarAgent {
+            let items = await Task.detached { AccessibilityMenuBarItems.current() }.value
+            return filterAccessibilityItems(items, on: display, onScreenOnly: onScreenOnly)
+        }
+
         guard #available(macOS 26.0, *) else {
             return legacyMenuBarItems(on: display, onScreenOnly: onScreenOnly, activeSpaceOnly: activeSpaceOnly)
         }
@@ -314,18 +455,19 @@ extension MenuBarItem {
 // MARK: MenuBarItem: Equatable
 extension MenuBarItem: Equatable {
     static func == (lhs: MenuBarItem, rhs: MenuBarItem) -> Bool {
-        lhs.window == rhs.window
+        lhs.backing == rhs.backing
     }
 }
 
 // MARK: MenuBarItem: Hashable
 extension MenuBarItem: Hashable {
     func hash(into hasher: inout Hasher) {
-        hasher.combine(window)
+        hasher.combine(backing)
     }
 }
 
 // MARK: MenuBarItemInfo Unchecked Item Window Initializer
+
 private extension MenuBarItemInfo {
     /// Creates a simplified item from the given window.
     ///
