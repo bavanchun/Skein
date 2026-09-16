@@ -83,10 +83,6 @@ enum DiagnosticsMenu {
             DiagnosticsMenu.dumpLayoutTable()
         }
 
-        @objc func dumpItemCache() {
-            DiagnosticsMenu.dumpItemCache()
-        }
-
         @objc func spikeTableAccess() {
             DiagnosticsMenu.spikeTableAccess()
         }
