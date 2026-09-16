@@ -591,15 +591,21 @@ final class CollapseController: ObservableObject {
             let hasDividerInPost = postSlots.contains(where: isDividerSlot)
             let dividerLost = hadDividerInPre && !hasDividerInPost
 
+            // A display that already overflows before the collapse folds items into the
+            // system's own affordance whatever Skein does, so it cannot veto the collapse.
+            // Only a display that had room and lost a visible item counts as pushed.
+            let preHadOverflow = preDisplay?.slots.contains(where: \.isChevron) ?? false
             let visPIDsForDisplay = visiblePIDs[dKey] ?? []
             var visiblePushed = false
-            for pid in visPIDsForDisplay {
-                let hasUnoverflowedInPost = postSlots.contains { slot in
-                    slot.pid == pid && !MenuBarLayoutMath.isOverflowed(slot, among: postSlots, bar: bar)
-                }
-                if !hasUnoverflowedInPost {
-                    visiblePushed = true
-                    break
+            if !preHadOverflow {
+                for pid in visPIDsForDisplay {
+                    let hasUnoverflowedInPost = postSlots.contains { slot in
+                        slot.pid == pid && !MenuBarLayoutMath.isOverflowed(slot, among: postSlots, bar: bar)
+                    }
+                    if !hasUnoverflowedInPost {
+                        visiblePushed = true
+                        break
+                    }
                 }
             }
 
@@ -659,6 +665,16 @@ final class CollapseController: ObservableObject {
                 hiddenOnBar: hiddenCount,
                 remainder: remainder,
                 spacersOnBar: onBarSpacers
+            )
+
+            let displayWidth = dKey.split(separator: ",").last.flatMap { Int($0) } ?? 0
+            Logger.collapse.debug(
+                """
+                verdict display=\(displayWidth) dividerLost=\(dividerLost) \
+                visiblePushed=\(visiblePushed) hiddenOnBar=\(hiddenCount) \
+                spacersOnBar=\(onBarSpacers) preVisible=\(visPIDsForDisplay.count) \
+                preSlots=\(preDisplay?.slots.count ?? 0)
+                """
             )
         }
 

@@ -138,3 +138,13 @@ The build that writes the Revision 7 order anchored the block (`collapse anchore
 - Ten app switches afterwards produced no probes.
 - The notched display already carries an overflow affordance with items beyond it when Skein is not running at all, so it is full before Skein consumes anything. Any Skein consumption there pushes one visible item over the edge, which the safety rule is written to refuse.
 - The table-only experiment that hid on every display used six equal spacers of 384. The ladder's small terms are honored on the notched display, which is what triggers the refusal.
+
+## Why the collapse was refused (2026-09-16)
+
+Per-display verdict lines from the run with the pinned order:
+
+- 3008pt main: divider kept, no hidden item on the bar, two spacers honored, no visible item pushed. The collapse worked there.
+- 1080pt: divider kept, nothing hidden on the bar, no spacers honored, nothing pushed.
+- 1800pt notched: divider kept, nothing hidden on the bar, **no spacer honored at all**, yet a visible item lost its unoverflowed slot. The same verdict appeared after the revert, with the spacers back at rest, so the divider alone causes it.
+
+That display already shows an overflow affordance with items beyond it when Skein is not running, so it is full before Skein consumes anything. The safety rule was therefore vetoing a collapse that the system's own overflow handles, which is how the notched display hid correctly in earlier phases. A display that already overflows before the collapse no longer vetoes it; only a display that had room and then lost a visible item does.
