@@ -47,6 +47,9 @@ struct AdvancedSettingsPane: View {
                 showOnHoverDelaySlider
                 tempShowIntervalSlider
             }
+            if MenuBarPlatform.usesMenuBarAgent {
+                menuBarLayoutBackupsSection
+            }
             SkeinSection("Permissions") {
                 allPermissions
             }
@@ -186,6 +189,62 @@ struct AdvancedSettingsPane: View {
                 }
             }
             .padding(.vertical, 4)
+        }
+    }
+
+    @ViewBuilder
+    private var menuBarLayoutBackupsSection: some View {
+        SkeinSection("Menu Bar Layout Backups") {
+            if case .denied = LayoutTableFile.access() {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Full Disk Access is required to restore layouts on macOS 27")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("Open System Settings") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            } else {
+                let backups = LayoutBackups.list()
+                if backups.isEmpty {
+                    Text("No backups found")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(backups.prefix(10)), id: \.url) { backup in
+                        SkeinLabeledContent {
+                            Button("Restore…") {
+                                restoreBackup(backup)
+                            }
+                        } label: {
+                            Text(backup.date.formatted(date: .abbreviated, time: .standard))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func restoreBackup(_ backup: (date: Date, url: URL)) {
+        let alert = NSAlert()
+        let formattedDate = backup.date.formatted(date: .abbreviated, time: .standard)
+        alert.messageText = "Restore the menu bar layout from \(formattedDate)?"
+        alert.informativeText = "The menu bar reloads once."
+        alert.addButton(withTitle: "Restore")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return
+        }
+        Task { @MainActor in
+            let result = await LayoutTableWriter.restore(backup.url)
+            if result != .applied {
+                let failureAlert = NSAlert()
+                failureAlert.messageText = "Failed to restore layout"
+                failureAlert.informativeText = "Result: \(result)"
+                failureAlert.runModal()
+            }
         }
     }
 }

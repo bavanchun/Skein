@@ -17,6 +17,18 @@ enum LayoutTableWriter {
         case backupFailed
     }
 
+    /// The outcome of applying relative moves or restoring a layout backup.
+    enum ApplyResult: Equatable {
+        case applied
+        case refused(String)
+        case unreadable
+        case noChange
+        case writeFailed
+        case backupFailed
+        case restartFailedRolledBack
+        case restartFailedRollbackFailed
+    }
+
     /// Tracks whether a backup has already been performed during this application session.
     private static var hasBackedUpThisSession = false
 
@@ -34,7 +46,10 @@ enum LayoutTableWriter {
         let deadline = Date().addingTimeInterval(2.0)
         while Date() < deadline {
             Thread.sleep(forTimeInterval: 0.2)
-            if let fresh = LayoutTableFile.readFromDisk(), fresh == table {
+            if
+                let fresh = LayoutTableFile.readFromDisk(),
+                fresh == table
+            {
                 return true
             }
         }
@@ -85,6 +100,128 @@ enum LayoutTableWriter {
 
         Logger.layoutTableWriter.notice("layout table apply succeeded: written count=\(next.count)")
         return .written
+    }
+
+    /// Applies a list of relative moves to the layout table with preflight, backup, disk verification,
+    /// and either live-resort or restart with rollback.
+    @MainActor
+    static func apply(_ moves: [MenuBarLayoutMath.Move]) async -> ApplyResult {
+        if let reason = MenuBarAgentRestarter.preflight() {
+            Logger.layoutTableWriter.notice("layout table apply result=refused: \(reason)")
+            return .refused(reason)
+        }
+
+        guard
+            case .granted = LayoutTableFile.access(),
+            let fresh = LayoutTableFile.readFromDisk()
+        else {
+            Logger.layoutTableWriter.notice("layout table apply result=unreadable")
+            return .unreadable
+        }
+
+        guard
+            let next = MenuBarLayoutMath.applyMoves(moves, to: fresh),
+            next.count == fresh.count
+        else {
+            Logger.layoutTableWriter.notice("layout table apply result=noChange")
+            return .noChange
+        }
+
+        guard next != fresh else {
+            Logger.layoutTableWriter.notice("layout table apply result=noChange")
+            return .noChange
+        }
+
+        do {
+            _ = try LayoutBackups.save(fresh)
+        } catch {
+            Logger.layoutTableWriter.error("layout table apply result=backupFailed")
+            return .backupFailed
+        }
+
+        guard write(next) else {
+            Logger.layoutTableWriter.error("layout table apply result=writeFailed")
+            return .writeFailed
+        }
+
+        if MenuBarAgentRestarter.liveResortApplies {
+            try? await Task.sleep(for: .seconds(1))
+            Logger.layoutTableWriter.notice("layout table apply result=applied")
+            return .applied
+        }
+
+        if await MenuBarAgentRestarter.restart() {
+            Logger.layoutTableWriter.notice("layout table apply result=applied")
+            return .applied
+        } else {
+            let rolledBack = write(fresh)
+            if rolledBack {
+                Logger.layoutTableWriter.error("layout table apply result=restartFailedRolledBack")
+                return .restartFailedRolledBack
+            } else {
+                Logger.layoutTableWriter.error("layout table apply result=restartFailedRollbackFailed")
+                return .restartFailedRollbackFailed
+            }
+        }
+    }
+
+    /// Restores a layout table snapshot from a backup file with preflight, backup of current state,
+    /// disk verification, and MenuBarAgent restart with rollback.
+    @MainActor
+    static func restore(_ url: URL) async -> ApplyResult {
+        guard let table = LayoutBackups.load(url) else {
+            Logger.layoutTableWriter.notice("layout table apply result=unreadable")
+            return .unreadable
+        }
+
+        if let reason = MenuBarAgentRestarter.preflight() {
+            Logger.layoutTableWriter.notice("layout table apply result=refused: \(reason)")
+            return .refused(reason)
+        }
+
+        guard
+            case .granted = LayoutTableFile.access(),
+            let fresh = LayoutTableFile.readFromDisk()
+        else {
+            Logger.layoutTableWriter.notice("layout table apply result=unreadable")
+            return .unreadable
+        }
+
+        guard table.count == fresh.count else {
+            Logger.layoutTableWriter.notice("layout table apply result=refused: key count differs")
+            return .refused("key count differs")
+        }
+
+        guard table != fresh else {
+            Logger.layoutTableWriter.notice("layout table apply result=noChange")
+            return .noChange
+        }
+
+        do {
+            _ = try LayoutBackups.save(fresh)
+        } catch {
+            Logger.layoutTableWriter.error("layout table apply result=backupFailed")
+            return .backupFailed
+        }
+
+        guard write(table) else {
+            Logger.layoutTableWriter.error("layout table apply result=writeFailed")
+            return .writeFailed
+        }
+
+        if await MenuBarAgentRestarter.restart() {
+            Logger.layoutTableWriter.notice("layout table apply result=applied")
+            return .applied
+        } else {
+            let rolledBack = write(fresh)
+            if rolledBack {
+                Logger.layoutTableWriter.error("layout table apply result=restartFailedRolledBack")
+                return .restartFailedRolledBack
+            } else {
+                Logger.layoutTableWriter.error("layout table apply result=restartFailedRollbackFailed")
+                return .restartFailedRollbackFailed
+            }
+        }
     }
 }
 
