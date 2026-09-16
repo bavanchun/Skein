@@ -26,6 +26,7 @@ enum DiagnosticsMenu {
 
     private static let actions: [(String, Selector)] = [
         ("Dump Layout Table", #selector(Target.dumpLayoutTable)),
+        ("Dump Item Cache", #selector(Target.dumpItemCache)),
         ("Spike: Table Access", #selector(Target.spikeTableAccess)),
         ("Spike: Sentinel Write", #selector(Target.spikeSentinelWrite)),
         ("Spike: Swap Two Items", #selector(Target.spikeSwapTwoItems)),
@@ -82,6 +83,10 @@ enum DiagnosticsMenu {
             DiagnosticsMenu.dumpLayoutTable()
         }
 
+        @objc func dumpItemCache() {
+            DiagnosticsMenu.dumpItemCache()
+        }
+
         @objc func spikeTableAccess() {
             DiagnosticsMenu.spikeTableAccess()
         }
@@ -104,6 +109,13 @@ enum DiagnosticsMenu {
     }
 
     // MARK: Actions
+
+    private static func dumpItemCache() {
+        let widths = NSScreen.screens.map(\.frame.width)
+        let spacers = CollapseController.shared.spacerLengths(for: widths)
+        let length = spacers.first ?? 0
+        logger.notice("diag collapse spacers=\(spacers.count) length=\(Int(length))")
+    }
 
     private static func dumpLayoutTable() {
         let access = LayoutTableFile.access()

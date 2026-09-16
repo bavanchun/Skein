@@ -10,7 +10,7 @@ import CoreGraphics
 import Foundation
 
 @main
-struct TestMenuBarLayoutMath {
+enum TestMenuBarLayoutMath {
     nonisolated(unsafe) static var failures = 0
 
     static func expect(_ condition: Bool, _ message: String) {
@@ -33,25 +33,44 @@ struct TestMenuBarLayoutMath {
         expect(MenuBarLayoutMath.nextProbe(honored: 40, dropped: 80) == 56, "nextProbe(honored: 40, dropped: 80) == 56")
         expect(MenuBarLayoutMath.nextProbe(honored: 40, dropped: 72) == nil, "nextProbe(honored: 40, dropped: 72) == nil")
 
-        let (div1, sp1) = MenuBarLayoutMath.ladderLengths(caps: [280, 588, 1496])
-        expect(div1 == 264 && sp1 == [1200], "ladderLengths(caps: [280, 588, 1496]) == (264, [1200])")
+        let (planDiv1, planSp1) = MenuBarLayoutMath.spacerPlan(caps: [280, 588, 1496], spacerLength: 400)
+        expect(
+            planDiv1 == 264 && planSp1 == [400, 400, 400, 400, 400, 400],
+            "spacerPlan(caps: [280, 588, 1496], spacerLength: 400) gives divider 264 and six spacers of 400"
+        )
 
-        let (_, spNarrowGap) = MenuBarLayoutMath.ladderLengths(caps: [280, 900, 1000])
-        expect(spNarrowGap.isEmpty, "ladderLengths(caps: [280, 900, 1000]) has no spacer shorter than the second cap")
+        let (planDiv2, planSp2) = MenuBarLayoutMath.spacerPlan(caps: [280], spacerLength: 400)
+        expect(
+            planDiv2 == 264 && planSp2.isEmpty,
+            "spacerPlan(caps: [280], spacerLength: 400) gives no spacers"
+        )
 
-        let (div2, sp2) = MenuBarLayoutMath.ladderLengths(caps: [280])
-        expect(div2 == 264 && sp2.isEmpty, "ladderLengths(caps: [280]) == (264, [])")
+        let (planDiv3, planSp3) = MenuBarLayoutMath.spacerPlan(caps: [280, 588, 1496], spacerLength: 0)
+        expect(
+            planDiv3 == 264 && planSp3.isEmpty,
+            "spacerPlan(caps: [280, 588, 1496], spacerLength: 0) gives no spacers"
+        )
 
-        let (div3, sp3) = MenuBarLayoutMath.ladderLengths(caps: [280, 300])
-        expect(div3 == 264 && sp3.isEmpty, "ladderLengths(caps: [280, 300]) == (264, [])")
+        let (planDiv4, _) = MenuBarLayoutMath.spacerPlan(caps: [40], spacerLength: 400)
+        expect(
+            planDiv4 == 40,
+            "spacerPlan(caps: [40], spacerLength: 400).divider == 40"
+        )
 
-        let (div4, _) = MenuBarLayoutMath.ladderLengths(caps: [40])
-        expect(div4 == 40, "ladderLengths(caps: [40]).divider == 40")
+        expect(
+            MenuBarLayoutMath.firstSpacerLength(caps: [280, 588, 1496]) == 604,
+            "firstSpacerLength(caps: [280, 588, 1496]) == 604"
+        )
 
-        let bounds1 = MenuBarLayoutMath.fillBounds(caps: [280, 588, 1496], ladder: (div1, sp1))
+        expect(
+            MenuBarLayoutMath.firstSpacerLength(caps: [280]) == MenuBarLayoutMath.minimumUnit,
+            "firstSpacerLength(caps: [280]) == minimumUnit"
+        )
+
+        let bounds1 = MenuBarLayoutMath.fillBounds(caps: [280, 588, 1496], plan: (planDiv1, planSp1))
         expect(bounds1?.lower == 589 && bounds1?.upper == 1496, "fillBounds(caps: [280, 588, 1496]) == (589, 1496)")
 
-        let bounds2 = MenuBarLayoutMath.fillBounds(caps: [1496], ladder: (div1, sp1))
+        let bounds2 = MenuBarLayoutMath.fillBounds(caps: [1496], plan: (planDiv1, planSp1))
         expect(bounds2?.lower == 40 && bounds2?.upper == 1496, "fillBounds(caps: [1496]) == (40, 1496)")
 
         expect(MenuBarLayoutMath.summary([.collapsed, .itemsVisible]) == .itemsVisible, "summary([collapsed, itemsVisible]) == itemsVisible")
@@ -67,7 +86,7 @@ struct TestMenuBarLayoutMath {
         let ownWidths: Set<CGFloat> = [264, 17, 30]
 
         let obs1 = Obs(bar: bar, slots: [
-            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
         ])
         expect(
             MenuBarLayoutMath.state(
@@ -81,7 +100,7 @@ struct TestMenuBarLayoutMath {
         )
 
         let obs2 = Obs(bar: bar, slots: [
-            Slot(frame: CGRect(x: 1000, y: 0, width: 50, height: 24), isChevron: false, identifier: "OtherApp")
+            Slot(frame: CGRect(x: 1000, y: 0, width: 50, height: 24), isChevron: false, identifier: "OtherApp"),
         ])
         expect(
             MenuBarLayoutMath.state(
@@ -96,7 +115,7 @@ struct TestMenuBarLayoutMath {
 
         let obs3 = Obs(bar: bar, slots: [
             Slot(frame: CGRect(x: 800, y: 0, width: 42, height: 24), isChevron: false, identifier: nil),
-            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
         ])
         expect(
             MenuBarLayoutMath.state(
@@ -111,7 +130,7 @@ struct TestMenuBarLayoutMath {
 
         let obs4 = Obs(bar: bar, slots: [
             Slot(frame: CGRect(x: 500, y: 0, width: 30, height: 24), isChevron: true, identifier: nil),
-            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
         ])
         expect(
             MenuBarLayoutMath.state(
@@ -126,7 +145,7 @@ struct TestMenuBarLayoutMath {
 
         let obs5 = Obs(bar: bar, slots: [
             Slot(frame: CGRect(x: 100, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
-            Slot(frame: CGRect(x: 120, y: 0, width: 50, height: 24), isChevron: false, identifier: "AppA")
+            Slot(frame: CGRect(x: 120, y: 0, width: 50, height: 24), isChevron: false, identifier: "AppA"),
         ])
         expect(
             MenuBarLayoutMath.state(
@@ -142,7 +161,7 @@ struct TestMenuBarLayoutMath {
         let obs6 = Obs(bar: bar, slots: [
             Slot(frame: CGRect(x: 200, y: 0, width: 40, height: 24), isChevron: false, identifier: "AppA"),
             Slot(frame: CGRect(x: 210, y: 0, width: 40, height: 24), isChevron: false, identifier: "AppB"),
-            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
         ])
         expect(
             MenuBarLayoutMath.state(
@@ -157,7 +176,7 @@ struct TestMenuBarLayoutMath {
 
         let obs7 = Obs(bar: bar, slots: [
             Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
-            Slot(frame: CGRect(x: 1300, y: 0, width: 42, height: 24), isChevron: false, identifier: "RightApp")
+            Slot(frame: CGRect(x: 1300, y: 0, width: 42, height: 24), isChevron: false, identifier: "RightApp"),
         ])
         expect(
             MenuBarLayoutMath.state(
@@ -172,7 +191,7 @@ struct TestMenuBarLayoutMath {
 
         let obs8 = Obs(bar: bar, slots: [
             Slot(frame: CGRect(x: 700, y: 0, width: 264, height: 24), isChevron: false, identifier: "OtherApp"),
-            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
         ])
         expect(
             MenuBarLayoutMath.state(
@@ -186,7 +205,7 @@ struct TestMenuBarLayoutMath {
         )
 
         let obs9 = Obs(bar: bar, slots: [
-            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
         ])
         expect(
             MenuBarLayoutMath.state(
@@ -202,7 +221,7 @@ struct TestMenuBarLayoutMath {
         let hiddenPIDs: Set<pid_t> = [42]
         let obsLeakedRight = Obs(bar: bar, slots: [
             Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
-            Slot(frame: CGRect(x: 1300, y: 0, width: 40, height: 24), isChevron: false, identifier: "LeakedApp", pid: 42)
+            Slot(frame: CGRect(x: 1300, y: 0, width: 40, height: 24), isChevron: false, identifier: "LeakedApp", pid: 42),
         ])
         let leakedRight = MenuBarLayoutMath.leakedProcessIdentifiers(
             in: obsLeakedRight,
@@ -216,7 +235,7 @@ struct TestMenuBarLayoutMath {
 
         let obsLeakedLeft = Obs(bar: bar, slots: [
             Slot(frame: CGRect(x: 800, y: 0, width: 40, height: 24), isChevron: false, identifier: "LeftApp", pid: 42),
-            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
         ])
         let leakedLeft = MenuBarLayoutMath.leakedProcessIdentifiers(
             in: obsLeakedLeft,
@@ -231,7 +250,7 @@ struct TestMenuBarLayoutMath {
         let obsLeakedPile = Obs(bar: bar, slots: [
             Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
             Slot(frame: CGRect(x: 1300, y: 0, width: 40, height: 24), isChevron: false, identifier: "AppA", pid: 42),
-            Slot(frame: CGRect(x: 1305, y: 0, width: 40, height: 24), isChevron: false, identifier: "AppB", pid: 42)
+            Slot(frame: CGRect(x: 1305, y: 0, width: 40, height: 24), isChevron: false, identifier: "AppB", pid: 42),
         ])
         let leakedPile = MenuBarLayoutMath.leakedProcessIdentifiers(
             in: obsLeakedPile,

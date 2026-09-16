@@ -205,8 +205,9 @@ enum MenuBarLayoutMath {
     }
 
     /// Computes the divider and spacer lengths for display caps.
-    static func ladderLengths(
+    static func spacerPlan(
         caps: [CGFloat],
+        spacerLength: CGFloat,
         margin: CGFloat = 16
     ) -> (divider: CGFloat, spacers: [CGFloat]) {
         guard !caps.isEmpty else {
@@ -223,42 +224,51 @@ enum MenuBarLayoutMath {
             }
             dedupedCaps.append(cap)
         }
-        guard let c1 = dedupedCaps.first else {
+        guard let smallest = dedupedCaps.first else {
             return (startUnit(screenWidths: []), [])
         }
 
-        func slot(_ x: CGFloat) -> CGFloat {
-            x + slotPadding
-        }
+        let divider = min(max(smallest - margin, minimumUnit), maximumUnit)
 
-        let divider = min(max(c1 - margin, minimumUnit), maximumUnit)
-        let used = slot(divider)
-
-        // A spacer must be longer than the second-widest display's cap so that every
-        // narrower display drops it. A notch splits a display's free space into two
-        // regions, so a spacer honored there can take the region the divider needs.
-        // Only the widest display gets a ladder spacer; fill spacers cover the rest.
-        var spacers: [CGFloat] = []
-        if
+        guard
             dedupedCaps.count > 1,
-            let widest = dedupedCaps.last
-        {
-            let secondWidest = dedupedCaps[dedupedCaps.count - 2]
-            let spacerSlot = slot(widest) - used - margin
-            if
-                spacerSlot > slot(secondWidest),
-                spacerSlot - slotPadding >= minimumUnit
-            {
-                spacers.append(min(spacerSlot - slotPadding, maximumUnit))
-            }
+            spacerLength > 0
+        else {
+            return (divider, [])
         }
+
+        let spacers = Array(repeating: spacerLength, count: maximumSpacersPerDivider)
         return (divider, spacers)
+    }
+
+    /// Computes the initial spacer length to probe for display caps.
+    static func firstSpacerLength(
+        caps: [CGFloat],
+        margin: CGFloat = 16
+    ) -> CGFloat {
+        let sortedCaps = caps.sorted()
+        var dedupedCaps: [CGFloat] = []
+        for cap in sortedCaps {
+            if
+                let last = dedupedCaps.last,
+                abs(cap - last) <= 2
+            {
+                continue
+            }
+            dedupedCaps.append(cap)
+        }
+        guard dedupedCaps.count >= 2 else {
+            return minimumUnit
+        }
+        let secondLargest = dedupedCaps[dedupedCaps.count - 2]
+        let candidate = secondLargest + searchResolution
+        return min(max(candidate, minimumUnit), maximumUnit)
     }
 
     /// Computes the search bounds for fill spacers in remaining display space.
     static func fillBounds(
         caps: [CGFloat],
-        ladder: (divider: CGFloat, spacers: [CGFloat])
+        plan: (divider: CGFloat, spacers: [CGFloat])? = nil
     ) -> (lower: CGFloat, upper: CGFloat)? {
         guard !caps.isEmpty else {
             return nil
