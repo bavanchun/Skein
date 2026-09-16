@@ -118,7 +118,9 @@ final class MenuBarItemImageCache: ObservableObject {
         var frame = CGRect.null
 
         for item in items {
-            let windowID = item.windowID
+            guard let windowID = item.windowID else {
+                continue
+            }
             guard
                 // Use the most up-to-date window frame.
                 let itemFrame = Bridging.getWindowFrame(for: windowID),

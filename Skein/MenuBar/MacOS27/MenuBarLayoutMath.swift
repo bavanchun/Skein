@@ -285,4 +285,116 @@ enum MenuBarLayoutMath {
         }
         return low + (((high - low) / 2) / searchResolution).rounded(.down) * searchResolution
     }
+    /// A parsed key from MenuBarAgent's layout table.
+    struct LayoutTableKey: Hashable {
+        /// The bundle identifier of the owning application, or `nil` for system modules.
+        let bundleID: String?
+
+        /// The autosave name or module name of the item.
+        let name: String
+
+        /// A Boolean value that indicates whether the key represents a system module.
+        let isModule: Bool
+
+        /// The raw string key in the layout table.
+        let rawKey: String
+
+        /// Parses a raw layout table key.
+        ///
+        /// Supports `status:<bundle>::<name>` and `module:<Name>` with any trailing
+        /// `-<digits>` removed from the module name. Unknown formats return `nil`.
+        init?(rawKey: String) {
+            if rawKey.hasPrefix("status:") {
+                let remainder = rawKey.dropFirst(7)
+                guard let range = remainder.range(of: "::") else {
+                    return nil
+                }
+                let bundle = String(remainder[..<range.lowerBound])
+                let name = String(remainder[range.upperBound...])
+                self.bundleID = bundle
+                self.name = name
+                self.isModule = false
+                self.rawKey = rawKey
+            } else if rawKey.hasPrefix("module:") {
+                let remainder = String(rawKey.dropFirst(7))
+                var name = remainder
+                if let dashIndex = remainder.lastIndex(of: "-") {
+                    let suffix = remainder[remainder.index(after: dashIndex)...]
+                    if
+                        !suffix.isEmpty,
+                        suffix.allSatisfy(\.isNumber)
+                    {
+                        name = String(remainder[..<dashIndex])
+                    }
+                }
+                self.bundleID = nil
+                self.name = name
+                self.isModule = true
+                self.rawKey = rawKey
+            } else {
+                return nil
+            }
+        }
+    }
+
+    /// Names of the menu bar sections.
+    enum SectionName: Equatable {
+        case visible
+        case hidden
+        case alwaysHidden
+    }
+
+    /// Returns the parsed table keys sorted by distance descending.
+    static func orderedKeys(_ table: [String: Double]) -> [(key: LayoutTableKey, distance: Double)] {
+        table.compactMap { rawKey, distance in
+            LayoutTableKey(rawKey: rawKey).map { ($0, distance) }
+        }
+        .sorted { first, second in
+            if first.distance != second.distance {
+                return first.distance > second.distance
+            }
+            return first.key.rawKey < second.key.rawKey
+        }
+    }
+
+    /// Pairs items with table keys, marking them as grouped when frames are untrustworthy
+    /// or item counts differ from table key counts.
+    static func zip<Element>(
+        items: [Element],
+        keys: [LayoutTableKey],
+        framesTrustworthy: Bool
+    ) -> (pairs: [(Element, LayoutTableKey)], grouped: Bool) {
+        if
+            framesTrustworthy,
+            items.count == keys.count
+        {
+            let pairs = Swift.zip(items, keys).map { ($0, $1) }
+            return (pairs: pairs, grouped: false)
+        } else {
+            let count = min(items.count, keys.count)
+            let pairs = Swift.zip(items.prefix(count), keys.prefix(count)).map { ($0, $1) }
+            return (pairs: pairs, grouped: true)
+        }
+    }
+
+    /// Determines the section for an item at the given distance from the trailing edge.
+    static func section(
+        forDistance distance: Double,
+        hiddenDivider: Double?,
+        alwaysHiddenDivider: Double?
+    ) -> SectionName {
+        if
+            let alwaysHiddenDivider,
+            distance > alwaysHiddenDivider
+        {
+            return .alwaysHidden
+        }
+        if
+            let hiddenDivider,
+            distance > hiddenDivider
+        {
+            return .hidden
+        }
+        return .visible
+    }
 }

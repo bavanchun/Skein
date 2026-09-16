@@ -252,6 +252,67 @@ enum TestMenuBarLayoutMath {
         )
         expect(leakedPile.isEmpty, "leaked pid in an overflow pile is not reported")
 
+        // Task 3.2 tests
+        let statusKey = MenuBarLayoutMath.LayoutTableKey(rawKey: "status:com.example.app::Item-0")
+        expect(statusKey?.bundleID == "com.example.app", "statusKey bundleID")
+        expect(statusKey?.name == "Item-0", "statusKey name")
+        expect(statusKey?.isModule == false, "statusKey isModule")
+        expect(statusKey?.rawKey == "status:com.example.app::Item-0", "statusKey rawKey")
+
+        let moduleKey = MenuBarLayoutMath.LayoutTableKey(rawKey: "module:BentoBox-0")
+        expect(moduleKey?.bundleID == nil, "moduleKey bundleID")
+        expect(moduleKey?.name == "BentoBox", "moduleKey name BentoBox")
+        expect(moduleKey?.isModule == true, "moduleKey isModule")
+        expect(moduleKey?.rawKey == "module:BentoBox-0", "moduleKey rawKey")
+
+        let garbageKey = MenuBarLayoutMath.LayoutTableKey(rawKey: "garbage")
+        expect(garbageKey == nil, "garbageKey == nil")
+
+        let table: [String: Double] = [
+            "status:com.example.app::Item-0": 100.0,
+            "module:BentoBox-0": 300.0,
+            "garbage": 200.0,
+            "status:com.example.other::Item-1": 500.0,
+        ]
+        let ordered = MenuBarLayoutMath.orderedKeys(table)
+        expect(ordered.count == 3, "orderedKeys count == 3 (garbage excluded)")
+        expect(ordered[0].distance == 500.0 && ordered[0].key.name == "Item-1", "ordered[0] distance 500")
+        expect(ordered[1].distance == 300.0 && ordered[1].key.name == "BentoBox", "ordered[1] distance 300")
+        expect(ordered[2].distance == 100.0 && ordered[2].key.name == "Item-0", "ordered[2] distance 100")
+
+        if
+            let key1 = statusKey,
+            let key2 = moduleKey,
+            let key3 = MenuBarLayoutMath.LayoutTableKey(rawKey: "status:com.example.other::Item-1")
+        {
+            let zip2v3 = MenuBarLayoutMath.zip(items: ["A", "B"], keys: [key1, key2, key3], framesTrustworthy: true)
+            expect(zip2v3.grouped == true, "zip 2 vs 3 -> grouped")
+            expect(zip2v3.pairs.count == 2, "zip 2 vs 3 count == 2")
+
+            let zip2v2Untrusted = MenuBarLayoutMath.zip(items: ["A", "B"], keys: [key1, key2], framesTrustworthy: false)
+            expect(zip2v2Untrusted.grouped == true, "zip 2 vs 2 untrusted -> grouped")
+            expect(zip2v2Untrusted.pairs.count == 2, "zip 2 vs 2 untrusted count == 2")
+
+            let zip2v2Trusted = MenuBarLayoutMath.zip(items: ["A", "B"], keys: [key1, key2], framesTrustworthy: true)
+            expect(zip2v2Trusted.grouped == false, "zip 2 vs 2 trusted -> not grouped")
+            expect(zip2v2Trusted.pairs.count == 2, "zip 2 vs 2 trusted count == 2")
+        } else {
+            expect(false, "Keys failed to initialize for zip tests")
+        }
+
+        expect(
+            MenuBarLayoutMath.section(forDistance: 545.5, hiddenDivider: 429.5, alwaysHiddenDivider: nil) == .hidden,
+            "545.5 with HItem 429.5 -> hidden"
+        )
+        expect(
+            MenuBarLayoutMath.section(forDistance: 385.5, hiddenDivider: 429.5, alwaysHiddenDivider: nil) == .visible,
+            "385.5 with HItem 429.5 -> visible"
+        )
+        expect(
+            MenuBarLayoutMath.section(forDistance: 600.0, hiddenDivider: 429.5, alwaysHiddenDivider: 580.0) == .alwaysHidden,
+            "600 with AHItem 580, HItem 429.5 -> alwaysHidden"
+        )
+
         if failures == 0 {
             print("PASS")
         } else {
