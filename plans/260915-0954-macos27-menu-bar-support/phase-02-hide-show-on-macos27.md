@@ -394,6 +394,44 @@ These replace the Revision 4 criteria. The hidden section must contain at least 
 - After a forced kill while collapsed, the next launch logs `collapse block repaired count=<n>` and the order is restored.
 - With Full Disk Access denied: no length change is applied, the card appears, and `collapse anchor unavailable` is logged once.
 
+## Revision 6: several medium spacers (2026-09-16, coordinator)
+
+The anchor from Revision 5 works: one hide writes the table once, the hidden block moves to 8192 and up, and quitting while collapsed no longer reorders anything. What still fails is coverage on the main display, where a hidden item keeps its slot left of Skein's block.
+
+Measurements are in `reports/spike-results.md`, "Anchoring and spacer sizing". The short version:
+
+- One long spacer covers less than several medium ones, because an item longer than roughly 1500 is dropped on the main display and a dropped item covers nothing.
+- The main display does produce an overflow chevron once its free space runs out, so pushing items off it is possible.
+- Spacer size decides which displays keep the divider. With a divider of 264: spacers of 300 were honored on the narrower displays too, while spacers of 400 or 450 were honored only on the main display, where four of them fit alongside the divider.
+
+This supersedes `ladderLengths` from Revisions 3 and 4. Everything else stands.
+
+### Task R16: equal spacers, sized by a search
+
+- **Target:** `MenuBarLayoutMath.swift`, `Scripts/TestMenuBarLayoutMath.swift`, `CollapseController.swift`.
+- **Replace `ladderLengths(caps:margin:)`** with `spacerPlan(caps: [CGFloat], spacerLength: CGFloat) -> (divider: CGFloat, spacers: [CGFloat])`:
+  - `divider = clamp(smallest cap - margin, minimumUnit, maximumUnit)`, as today.
+  - `spacers` is `maximumSpacersPerDivider` copies of `spacerLength`, or none when there is only one display cap or `spacerLength` is not positive.
+  - Spacers that do not fit are dropped by the system, which is harmless.
+- **Add `static func firstSpacerLength(caps: [CGFloat], margin: CGFloat = 16) -> CGFloat`:** the second-largest cap plus `searchResolution`, clamped to `[minimumUnit, maximumUnit]`. With caps 280, 588 and 1496 that is 604.
+- **Add a spacer search to the controller**, run once per configuration key after the divider search, at most four attempts:
+  1. Apply `spacerPlan` with the current candidate, starting at `firstSpacerLength`.
+  2. Settle, observe, and count the honored spacer slots per display.
+  3. Accept when the divider is present on every display and no display other than the widest honors a spacer.
+  4. Otherwise raise the candidate by `searchResolution` and retry. On the fourth failure, keep the last candidate and log `collapse spacer search incomplete`.
+  - Cache the accepted length in `spacerLengths[key]`, in memory only, and reuse it with the cached caps.
+- **Keep the fill phase** for the widest display, with `fillBounds` unchanged.
+- **Tests:**
+  - `spacerPlan(caps: [280, 588, 1496], spacerLength: 400)` gives divider 264 and six spacers of 400.
+  - `spacerPlan(caps: [280], spacerLength: 400)` gives no spacers.
+  - `firstSpacerLength(caps: [280, 588, 1496]) == 604`.
+  - `firstSpacerLength(caps: [280]) == minimumUnit`.
+
+### Task R17: honesty about coverage
+
+- When the widest display still reports `itemsVisible` after the spacer search and the fill phase, log `collapse incomplete screens=<key> display=<w>` as today, and do not log `collapse honored`.
+- The Debug "Dump Item Cache" action also logs `diag collapse spacers=<n> length=<l>`, so a hardware run can show what was applied without reading the table.
+
 ## Tasks
 
 ### Task 2.1 — Defaults keys

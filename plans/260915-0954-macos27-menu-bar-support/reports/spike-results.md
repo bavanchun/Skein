@@ -80,3 +80,24 @@ Three displays attached, no Skein running for the item tests.
   - Free space on a notched display is two regions, not one.
 - Main display: after the divider was lengthened past its cap, the window kept listing the divider at its previous width. A freshly added 4192pt item had no slot on any window.
 - Ten app activations with the hidden section collapsed produced no collapse probes.
+
+## Anchoring and spacer sizing (2026-09-16)
+
+Skein Dev with the anchor implementation, then test items with Skein Dev quit. Three displays: 3008pt main, 1800pt notched, 1080pt.
+
+- **The anchor works.** One hide wrote the table once (`layout table apply succeeded`, 23 keys) and logged `collapse anchored count=5`. The four third-party keys of the hidden block moved to 8192-8216, and the hidden set was identical before and after.
+- **Quitting while the section was collapsed changed nothing.** The divider's distance and the hidden set were unchanged, and the anchored values survived. The earlier corruption path is closed.
+- **One long spacer covers less than several medium ones.** A single item longer than roughly 1500 is dropped on the main display, and a dropped item covers nothing:
+  - 264 + 1400: the main display honored both slots, 1696pt total.
+  - 264 + 1496: the main display honored only the divider.
+  - 900 + 800: both honored, 1732pt total.
+- **The main display does show an overflow chevron.** Ten items of 300 gave seven honored slots there (2212pt) and a chevron. Six items of 300 were all honored with no chevron.
+- **Spacer size decides which displays keep the divider:**
+  - divider 264 with six 300: main honored six spacers and the divider with a chevron; the 1800pt display honored one spacer and the divider; the 1080pt display honored only the divider.
+  - divider 264 with four 400: main honored four spacers and the divider without a chevron; both narrower displays honored only the divider.
+  - divider 264 with three 500: main honored three spacers and the divider; both narrower displays honored only the divider.
+- So spacers must be small enough to pack on the widest display and large enough that narrower displays drop them. On this hardware that is about 400, not the single 1136 the ladder produced.
+- Six spacers at the 6-spacer budget, divider 264:
+  - six of 400: the main display honored four spacers and the divider, 1944pt, no chevron; both narrower displays honored only the divider.
+  - six of 450: the main display honored four spacers and the divider, 2144pt, with a chevron; both narrower displays honored only the divider.
+  - Spacers that do not fit are dropped, which costs nothing.
