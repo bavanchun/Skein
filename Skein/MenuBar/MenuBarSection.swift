@@ -261,6 +261,72 @@ final class MenuBarSection {
         }
     }
 
+    /// Returns the control items to modify for temporary use.
+    private func controlItemsForTemporaryUse() -> [ControlItem]? {
+        guard let appState else {
+            return nil
+        }
+        let targetSection: MenuBarSection
+        if
+            name == .alwaysHidden,
+            !controlItem.isAddedToMenuBar
+        {
+            guard let hiddenSection = appState.menuBarManager.section(withName: .hidden) else {
+                return nil
+            }
+            targetSection = hiddenSection
+        } else {
+            targetSection = self
+        }
+
+        switch targetSection.name {
+        case .visible:
+            return [targetSection.controlItem]
+        case .hidden:
+            guard let visibleSection = appState.menuBarManager.section(withName: .visible) else {
+                return nil
+            }
+            return [targetSection.controlItem, visibleSection.controlItem]
+        case .alwaysHidden:
+            guard
+                let hiddenSection = appState.menuBarManager.section(withName: .hidden),
+                let visibleSection = appState.menuBarManager.section(withName: .visible)
+            else {
+                return nil
+            }
+            return [targetSection.controlItem, hiddenSection.controlItem, visibleSection.controlItem]
+        }
+    }
+
+    /// Directly reveals the section for temporary use.
+    ///
+    /// - Returns: A Boolean value that indicates whether the control item states were changed.
+    @discardableResult
+    func revealForTemporaryUse() -> Bool {
+        guard let controlItems = controlItemsForTemporaryUse() else {
+            return false
+        }
+        let needsChange = controlItems.contains { $0.state != .showItems }
+        guard needsChange else {
+            return false
+        }
+        for item in controlItems {
+            item.state = .showItems
+        }
+        return true
+    }
+
+    /// Directly conceals the section after temporary use.
+    func concealAfterTemporaryUse() {
+        guard let controlItems = controlItemsForTemporaryUse() else {
+            return
+        }
+        for item in controlItems {
+            item.state = .hideItems
+        }
+        appState?.allowShowOnHover()
+    }
+
     /// Starts running checks to determine when to rehide the section.
     private func startRehideChecks() {
         rehideTimer?.invalidate()
