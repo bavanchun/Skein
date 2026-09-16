@@ -129,3 +129,12 @@ Two runs of the same build, changing only the layout table through CFPreferences
 - **Spacer keys and hidden block interleaved:** the divider kept its slot on all three displays, but two hidden items still had slots on the main display, between spacers. The controller logged `collapse nothing to hide`, because its hidden-item detection reads process identifiers that are only exposed on one window.
 - **Hidden block moved strictly left of every spacer key:** the run logged `collapse honored` for the three-display configuration. The main display listed the divider, five spacers and an overflow affordance, with no hidden-item slot; both secondary displays listed the divider and no hidden-item slot.
 - So the collapse works on every display once the order is visible items, divider, spacers largest first, then the hidden block. Spacer sizing was never the blocker.
+
+## First run of the pinned order in code (2026-09-16)
+
+The build that writes the Revision 7 order anchored the block (`collapse anchored count=5`, one verified table write) and then refused to collapse: `collapse refused reason=visiblePushed display=1800`.
+
+- The refusal reverted cleanly: spacers back to their resting length, the divider present on all three displays, the hidden items back on the bar, and the layout order unchanged.
+- Ten app switches afterwards produced no probes.
+- The notched display already carries an overflow affordance with items beyond it when Skein is not running at all, so it is full before Skein consumes anything. Any Skein consumption there pushes one visible item over the edge, which the safety rule is written to refuse.
+- The table-only experiment that hid on every display used six equal spacers of 384. The ladder's small terms are honored on the notched display, which is what triggers the refusal.
