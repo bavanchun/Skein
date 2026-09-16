@@ -28,6 +28,19 @@ enum MenuBarLayoutMath {
         var frame: CGRect
         var isChevron: Bool
         var identifier: String?
+        var pid: pid_t?
+
+        init(
+            frame: CGRect,
+            isChevron: Bool,
+            identifier: String? = nil,
+            pid: pid_t? = nil
+        ) {
+            self.frame = frame
+            self.isChevron = isChevron
+            self.identifier = identifier
+            self.pid = pid
+        }
     }
 
     /// An observation of a MenuBarAgent menu bar window and its slots.
@@ -131,6 +144,50 @@ enum MenuBarLayoutMath {
             return .itemsVisible
         }
         return .collapsed
+    }
+
+    /// Finds process identifiers from `hiddenPIDs` that have leaked to the right of our block.
+    static func leakedProcessIdentifiers(
+        in observation: DisplayObservation,
+        dividerIdentifier: String,
+        dividerSlotWidth: CGFloat,
+        ownIdentifiers: Set<String>,
+        ownSlotWidths: Set<CGFloat>,
+        hiddenPIDs: Set<pid_t>
+    ) -> Set<pid_t> {
+        guard !hiddenPIDs.isEmpty else {
+            return []
+        }
+        let sortedSlots = observation.slots.sorted { $0.frame.minX < $1.frame.minX }
+
+        func isOurs(_ slot: Slot) -> Bool {
+            if let id = slot.identifier {
+                return ownIdentifiers.contains(id)
+            }
+            return ownSlotWidths.contains { abs(slot.frame.width - $0) <= 1 }
+        }
+
+        let oursNotOverflowed = sortedSlots.filter {
+            isOurs($0) && !isOverflowed($0, among: sortedSlots, bar: observation.bar)
+        }
+        guard let largestOursMaxX = oursNotOverflowed.map(\.frame.maxX).max() else {
+            return []
+        }
+
+        var leaked = Set<pid_t>()
+        for slot in sortedSlots {
+            guard
+                !isOurs(slot),
+                !isOverflowed(slot, among: sortedSlots, bar: observation.bar),
+                slot.frame.minX >= largestOursMaxX,
+                let pid = slot.pid,
+                hiddenPIDs.contains(pid)
+            else {
+                continue
+            }
+            leaked.insert(pid)
+        }
+        return leaked
     }
 
     /// Summarizes display states into a single overall state.

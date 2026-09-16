@@ -169,6 +169,7 @@ extension Defaults {
         case forceLegacyMenuBar = "ForceLegacyMenuBar"
         case collapseUnitOverride = "CollapseUnitOverride"
         case diagnosticsRemoteTrigger = "DiagnosticsRemoteTrigger"
+        case collapseHiddenBlock = "CollapseHiddenBlock"
 
         // MARK: Menu Bar Appearance Settings
 

@@ -8,10 +8,32 @@ import Combine
 
 /// Finds, verifies and maintains the honored collapse length for section dividers on macOS 27.
 @MainActor
-final class CollapseController {
+final class CollapseController: ObservableObject {
     static let shared = CollapseController()
 
-    private static let settleDelay: Duration = .milliseconds(350)
+    private static let settleDelay: Duration = .milliseconds(600)
+    private static var hasLoggedAnchorUnavailable = false
+
+    /// Reason why the anchor could not be written, published for the settings pane card.
+    @Published var collapseAnchorUnavailableReason: String?
+
+    /// Number of probes during searches that required a second observation for stability verification.
+    private(set) var probesRequiringSecondObservation = 0
+
+    /// The distance of the HItem divider in shown state, cached for quit verification.
+    private(set) var shownHItemDistance: Double?
+
+    /// Process identifiers of on-bar slots left of the divider before collapse.
+    private var hiddenPIDs = Set<pid_t>()
+
+    /// Keys of the hidden block remembered for the current collapse.
+    private var rememberedBlockKeys: [String] = []
+
+    /// Indicates whether the hidden block was snapshotted before the collapse lengths were applied.
+    private var hasPreparedSnapshot = false
+
+    /// Refusal handler provided by the section owner to restore dividers to shown state without direct section calls.
+    private var onRefusal: (() -> Void)?
 
     /// Honored divider lengths keyed by screen configuration key, then by display frame key.
     private var caps: [String: [String: CGFloat]] = [:]
@@ -94,6 +116,40 @@ final class CollapseController {
         return []
     }
 
+    /// Set of own status item identifiers.
+    private func ownIdentifiers() -> Set<String> {
+        var ids: Set<String> = [
+            ControlItem.Identifier.skeinIcon.rawValue,
+            ControlItem.Identifier.hidden.rawValue,
+            ControlItem.Identifier.alwaysHidden.rawValue,
+        ]
+        for i in 0..<MenuBarLayoutMath.maximumSpacersPerDivider {
+            ids.insert("HItemSpacer\(i)")
+            ids.insert("AHItemSpacer\(i)")
+        }
+        return ids
+    }
+
+    /// Set of own status item slot widths.
+    private func ownSlotWidths(dividers: [ControlItem]) -> Set<CGFloat> {
+        var widths: Set<CGFloat> = []
+        for d in dividers where d.length > 0 {
+            widths.insert(d.length + MenuBarLayoutMath.slotPadding)
+        }
+        widths.insert(CollapseSpacers.restingLength + MenuBarLayoutMath.slotPadding)
+        let screenWidths = NSScreen.screens.map(\.frame.width)
+        for spacerLength in spacerLengths(for: screenWidths) {
+            widths.insert(spacerLength + MenuBarLayoutMath.slotPadding)
+        }
+        if let skeinItem = appState?.menuBarManager.section(withName: .visible)?.controlItem {
+            let skeinWidth = skeinItem.window?.frame.width ?? skeinItem.length
+            if skeinWidth > 0 {
+                widths.insert(skeinWidth + MenuBarLayoutMath.slotPadding)
+            }
+        }
+        return widths
+    }
+
     /// Observes the collapse states for attached displays using the active divider.
     private func observeStates(dividers: [ControlItem]) async -> [String: MenuBarLayoutMath.DisplayState]? {
         guard let divider = dividers.first(where: {
@@ -113,32 +169,10 @@ final class CollapseController {
             return nil
         }
 
-        var ownIdentifiers: Set<String> = [
-            ControlItem.Identifier.skeinIcon.rawValue,
-            ControlItem.Identifier.hidden.rawValue,
-            ControlItem.Identifier.alwaysHidden.rawValue,
-        ]
-        for i in 0..<MenuBarLayoutMath.maximumSpacersPerDivider {
-            ownIdentifiers.insert("HItemSpacer\(i)")
-            ownIdentifiers.insert("AHItemSpacer\(i)")
-        }
+        checkLeaks(observations: observations, divider: divider, dividers: dividers)
 
-        var ownSlotWidths: Set<CGFloat> = []
-        for d in dividers where d.length > 0 {
-            ownSlotWidths.insert(d.length + MenuBarLayoutMath.slotPadding)
-        }
-        ownSlotWidths.insert(CollapseSpacers.restingLength + MenuBarLayoutMath.slotPadding)
-        let widths = NSScreen.screens.map(\.frame.width)
-        for spacerLength in spacerLengths(for: widths) {
-            ownSlotWidths.insert(spacerLength + MenuBarLayoutMath.slotPadding)
-        }
-        if let skeinItem = appState?.menuBarManager.section(withName: .visible)?.controlItem {
-            let skeinWidth = skeinItem.window?.frame.width ?? skeinItem.length
-            if skeinWidth > 0 {
-                ownSlotWidths.insert(skeinWidth + MenuBarLayoutMath.slotPadding)
-            }
-        }
-
+        let ownIDs = ownIdentifiers()
+        let ownWidths = ownSlotWidths(dividers: dividers)
         let dividerSlotWidth = (probingLength ?? divider.length) + MenuBarLayoutMath.slotPadding
 
         var states: [String: MenuBarLayoutMath.DisplayState] = [:]
@@ -147,19 +181,265 @@ final class CollapseController {
                 of: observation,
                 dividerIdentifier: divider.autosaveName,
                 dividerSlotWidth: dividerSlotWidth,
-                ownIdentifiers: ownIdentifiers,
-                ownSlotWidths: ownSlotWidths
+                ownIdentifiers: ownIDs,
+                ownSlotWidths: ownWidths
             )
         }
         return states
     }
 
+    /// Checks if any third-party items have leaked past the divider while collapsed.
+    private func checkLeaks(
+        observations: [String: MenuBarLayoutMath.DisplayObservation],
+        divider: ControlItem,
+        dividers: [ControlItem]
+    ) {
+        guard !hiddenPIDs.isEmpty else {
+            return
+        }
+        let ownIDs = ownIdentifiers()
+        let ownWidths = ownSlotWidths(dividers: dividers)
+        let dividerSlotWidth = (probingLength ?? divider.length) + MenuBarLayoutMath.slotPadding
+
+        var totalLeaked = Set<pid_t>()
+        for (_, observation) in observations {
+            let leaked = MenuBarLayoutMath.leakedProcessIdentifiers(
+                in: observation,
+                dividerIdentifier: divider.autosaveName,
+                dividerSlotWidth: dividerSlotWidth,
+                ownIdentifiers: ownIDs,
+                ownSlotWidths: ownWidths,
+                hiddenPIDs: hiddenPIDs
+            )
+            totalLeaked.formUnion(leaked)
+        }
+
+        if !totalLeaked.isEmpty {
+            Logger.collapse.notice("collapse leaked count=\(totalLeaked.count)")
+            _ = anchorBlock()
+        }
+    }
+
     /// A Boolean value that indicates whether the divider is still collapsed in the menu bar.
-    ///
-    /// A probe or fill that runs while the user shows the section would read every
-    /// length as dropped, so both stop as soon as this turns false.
     private func isCollapsed(_ divider: ControlItem) -> Bool {
         divider.isAddedToMenuBar && divider.isVisible && divider.state == .hideItems
+    }
+
+    /// Probes display states with the two-observation stability rule for dropped dividers.
+    private func probeDisplayStates(
+        dividers: [ControlItem]
+    ) async -> [String: (state: MenuBarLayoutMath.DisplayState?, attempts: Int)]? {
+        guard let firstObs = await observeStates(dividers: dividers) else {
+            return nil
+        }
+
+        let hasAnyDropped = firstObs.values.contains(.dividerDropped)
+        var secondObs: [String: MenuBarLayoutMath.DisplayState]?
+        if hasAnyDropped {
+            probesRequiringSecondObservation += 1
+            try? await Task.sleep(for: .milliseconds(200))
+            secondObs = await observeStates(dividers: dividers)
+        }
+
+        var results: [String: (state: MenuBarLayoutMath.DisplayState?, attempts: Int)] = [:]
+        for (dKey, state1) in firstObs {
+            if state1 == .dividerDropped {
+                if let state2 = secondObs?[dKey], state2 == .dividerDropped {
+                    results[dKey] = (state: .dividerDropped, attempts: 2)
+                } else {
+                    results[dKey] = (state: nil, attempts: 2)
+                }
+            } else {
+                results[dKey] = (state: state1, attempts: 1)
+            }
+        }
+        return results
+    }
+
+    /// Handles refusal when Full Disk Access is missing or writing/reading the table fails.
+    private func handleAnchorUnavailable(reason: String) {
+        if !Self.hasLoggedAnchorUnavailable {
+            Self.hasLoggedAnchorUnavailable = true
+            Logger.collapse.notice("collapse anchor unavailable reason=\(reason)")
+        }
+        collapseAnchorUnavailableReason = reason
+        onRefusal?()
+    }
+
+    /// Snapshots the hidden block before the section's collapse lengths are applied.
+    ///
+    /// The snapshot has to happen while the hidden items still hold their own
+    /// distances, so the section calls this before changing any state.
+    /// Returns `false` when the table cannot be read or written, which means the
+    /// section must stay shown.
+    @discardableResult
+    func prepareForCollapse(_ dividers: [ControlItem]) -> Bool {
+        guard MenuBarPlatform.usesMenuBarAgent else {
+            return true
+        }
+        hasPreparedSnapshot = snapshotHiddenBlock(dividers: dividers, requireCollapsed: false)
+        return hasPreparedSnapshot
+    }
+
+    /// Reads the layout table and records the hidden block keys and PIDs before collapse begins.
+    private func snapshotHiddenBlock(dividers: [ControlItem], requireCollapsed: Bool = true) -> Bool {
+        guard case .granted = LayoutTableFile.access() else {
+            handleAnchorUnavailable(reason: "denied")
+            return false
+        }
+        guard let table = LayoutTableFile.readFromDisk() else {
+            handleAnchorUnavailable(reason: "unreadable")
+            return false
+        }
+
+        func isEligible(_ divider: ControlItem, _ identifier: ControlItem.Identifier) -> Bool {
+            divider.identifier == identifier
+                && divider.isAddedToMenuBar
+                && divider.isVisible
+                && (!requireCollapsed || divider.state == .hideItems)
+        }
+        guard let activeDivider = dividers.first(where: { isEligible($0, .hidden) })
+            ?? dividers.first(where: { isEligible($0, .alwaysHidden) })
+            ?? dividers.first
+        else {
+            return false
+        }
+
+        let dividerName = activeDivider.autosaveName
+        guard let dividerKey = table.keys.first(where: {
+            $0.hasPrefix("status:") && $0.hasSuffix("::\(dividerName)")
+        }), let dividerDistance = table[dividerKey] else {
+            handleAnchorUnavailable(reason: "unreadable")
+            return false
+        }
+
+        if dividerName == ControlItem.Identifier.hidden.rawValue {
+            shownHItemDistance = dividerDistance
+        }
+
+        var blockKeys: [String] = []
+        for (key, distance) in table {
+            guard
+                key.hasPrefix("status:"),
+                !key.hasPrefix("module:"),
+                distance > dividerDistance
+            else {
+                continue
+            }
+            blockKeys.append(key)
+        }
+
+        blockKeys.sort { (table[$0] ?? 0) > (table[$1] ?? 0) }
+        Defaults.set(blockKeys, forKey: .collapseHiddenBlock)
+        rememberedBlockKeys = blockKeys
+
+        if let observations = MenuBarAgentWindows.observe() {
+            let currentPID = NSRunningApplication.current.processIdentifier
+            var pids = Set<pid_t>()
+            for (_, observation) in observations {
+                guard let dividerSlot = observation.slots.first(where: {
+                    $0.identifier == activeDivider.autosaveName
+                }) else {
+                    continue
+                }
+                for slot in observation.slots {
+                    guard
+                        !slot.isChevron,
+                        slot.frame.minX < dividerSlot.frame.minX,
+                        let pid = slot.pid,
+                        pid != currentPID
+                    else {
+                        continue
+                    }
+                    pids.insert(pid)
+                }
+            }
+            hiddenPIDs = pids
+        }
+
+        collapseAnchorUnavailableReason = nil
+        return true
+    }
+
+    /// Anchors the hidden block keys with values starting at 8192.
+    @discardableResult
+    private func anchorBlock() -> Bool {
+        let blockKeys = rememberedBlockKeys.isEmpty
+            ? (Defaults.stringArray(forKey: .collapseHiddenBlock) ?? (Defaults.array(forKey: .collapseHiddenBlock) as? [String]) ?? [])
+            : rememberedBlockKeys
+
+        guard !blockKeys.isEmpty else {
+            return true
+        }
+
+        let result = LayoutTableWriter.apply { table in
+            var next = table
+            let count = blockKeys.count
+            for (index, key) in blockKeys.enumerated() {
+                guard let currentDist = next[key] else {
+                    continue
+                }
+                if currentDist < 8192.0 {
+                    let rank = count - 1 - index
+                    next[key] = 8192.0 + Double(rank) * 8.0
+                }
+            }
+            return next
+        }
+
+        switch result {
+        case .written:
+            Logger.collapse.notice("collapse anchored count=\(blockKeys.count)")
+            return true
+        case .noChange:
+            return true
+        case .denied, .unreadable, .verifyFailed, .backupFailed:
+            handleAnchorUnavailable(reason: "\(result)")
+            return false
+        }
+    }
+
+    /// Re-anchors the remembered block on launch if MenuBarAgent rewrote distances while collapsed.
+    func repairIfNeeded() {
+        guard MenuBarPlatform.usesMenuBarAgent else {
+            return
+        }
+        guard
+            case .granted = LayoutTableFile.access(),
+            let table = LayoutTableFile.readFromDisk(),
+            let remembered = Defaults.stringArray(forKey: .collapseHiddenBlock) ?? (Defaults.array(forKey: .collapseHiddenBlock) as? [String]),
+            !remembered.isEmpty
+        else {
+            return
+        }
+
+        guard
+            let dividerKey = table.keys.first(where: {
+                $0.hasPrefix("status:") && $0.hasSuffix("::\(ControlItem.Identifier.hidden.rawValue)")
+            }),
+            let dividerDist = table[dividerKey]
+        else {
+            return
+        }
+
+        let needsRepair = remembered.contains { (table[$0] ?? 0) <= dividerDist }
+        guard needsRepair else {
+            return
+        }
+
+        let result = LayoutTableWriter.apply { current in
+            var next = current
+            let count = remembered.count
+            for (index, key) in remembered.enumerated() {
+                let rank = count - 1 - index
+                next[key] = 8192.0 + Double(rank) * 8.0
+            }
+            return next
+        }
+
+        if result == .written {
+            Logger.collapse.notice("collapse block repaired count=\(remembered.count)")
+        }
     }
 
     /// Searches for the honored divider lengths per display.
@@ -209,25 +489,47 @@ final class CollapseController {
             activeDivider.applyProbeLength(currentLength)
             try? await Task.sleep(for: Self.settleDelay)
 
-            guard
-                isCollapsed(activeDivider),
-                let states = await observeStates(dividers: dividers)
-            else {
+            guard isCollapsed(activeDivider) else {
                 isInterrupted = true
                 break
             }
 
-            for (dKey, state) in states {
+            guard let probeResults = await probeDisplayStates(dividers: dividers) else {
+                isInterrupted = true
+                break
+            }
+
+            if probeCount == 1 {
+                guard anchorBlock() else {
+                    // The anchor is what keeps the user's order intact, so a refused
+                    // write stops the search with the previous lengths restored.
+                    caps[key] = previousCaps
+                    fills[key] = previousFills
+                    probingLength = nil
+                    for divider in dividers {
+                        divider.reapplyCollapseLength()
+                    }
+                    return
+                }
+            }
+
+            for (dKey, probeResult) in probeResults {
                 observedDisplayKeys.insert(dKey)
                 let displayWidth = dKey.split(separator: ",").last.flatMap { Int($0) } ?? 0
-                Logger.collapse.debug(
-                    "probe length=\(Int(currentLength)) display=\(displayWidth) state=\(state.rawValue)"
-                )
-                if state != .dividerDropped {
-                    low[dKey] = max(low[dKey] ?? 0, currentLength)
+                if let st = probeResult.state {
+                    Logger.collapse.debug(
+                        "probe length=\(Int(currentLength)) display=\(displayWidth) state=\(st.rawValue) attempts=\(probeResult.attempts)"
+                    )
+                    if st != .dividerDropped {
+                        low[dKey] = max(low[dKey] ?? 0, currentLength)
+                    } else {
+                        let prevHigh = high[dKey] ?? currentLength
+                        high[dKey] = min(prevHigh, currentLength)
+                    }
                 } else {
-                    let prevHigh = high[dKey] ?? currentLength
-                    high[dKey] = min(prevHigh, currentLength)
+                    Logger.collapse.debug(
+                        "probe length=\(Int(currentLength)) display=\(displayWidth) state=unknown attempts=\(probeResult.attempts)"
+                    )
                 }
             }
 
@@ -282,8 +584,6 @@ final class CollapseController {
         }
 
         if isInterrupted {
-            // The section was shown or the observation became unknown: keep what was
-            // known before this search and change nothing else.
             caps[key] = previousCaps
             fills[key] = previousFills
             probingLength = nil
@@ -316,6 +616,8 @@ final class CollapseController {
         let postSearchStates = await observeStates(dividers: dividers)
         let postSearchSummary = postSearchStates.flatMap { MenuBarLayoutMath.summary(Array($0.values)) }
 
+        anchorBlock()
+
         if postSearchSummary == .collapsed {
             failures[key] = 0
             backoff[key] = 20
@@ -324,9 +626,16 @@ final class CollapseController {
             let displayCaps = caps[key].map { Array($0.values) } ?? []
             let ladder = MenuBarLayoutMath.ladderLengths(caps: displayCaps)
             let spacerString = ladder.spacers.map { "\(Int($0))" }.joined(separator: "+")
-            Logger.collapse.notice(
-                "collapse honored screens=\(key) divider=\(Int(ladder.divider)) spacers=\(spacerString)"
-            )
+
+            if hiddenPIDs.isEmpty {
+                Logger.collapse.notice(
+                    "collapse nothing to hide screens=\(key) divider=\(Int(ladder.divider)) spacers=\(spacerString)"
+                )
+            } else {
+                Logger.collapse.notice(
+                    "collapse honored screens=\(key) divider=\(Int(ladder.divider)) spacers=\(spacerString)"
+                )
+            }
         } else if postSearchSummary == .dividerDropped {
             failures[key, default: 0] += 1
             let currentBackoff = backoff[key] ?? 20
@@ -391,7 +700,7 @@ final class CollapseController {
             for (dKey, state) in states {
                 let displayWidth = dKey.split(separator: ",").last.flatMap { Int($0) } ?? 0
                 Logger.collapse.debug(
-                    "probe length=\(Int(candidate)) display=\(displayWidth) state=\(state.rawValue)"
+                    "probe length=\(Int(candidate)) display=\(displayWidth) state=\(state.rawValue) attempts=1"
                 )
             }
 
@@ -421,6 +730,8 @@ final class CollapseController {
         let finalStates = await observeStates(dividers: dividers)
         let summaryState = finalStates.flatMap { MenuBarLayoutMath.summary(Array($0.values)) }
 
+        anchorBlock()
+
         if summaryState == .collapsed {
             failures[key] = 0
             backoff[key] = 20
@@ -428,9 +739,16 @@ final class CollapseController {
 
             let allSpacers = ladder.spacers + (fills[key] ?? [])
             let spacerString = allSpacers.map { "\(Int($0))" }.joined(separator: "+")
-            Logger.collapse.notice(
-                "collapse honored screens=\(key) divider=\(Int(ladder.divider)) spacers=\(spacerString)"
-            )
+
+            if hiddenPIDs.isEmpty {
+                Logger.collapse.notice(
+                    "collapse nothing to hide screens=\(key) divider=\(Int(ladder.divider)) spacers=\(spacerString)"
+                )
+            } else {
+                Logger.collapse.notice(
+                    "collapse honored screens=\(key) divider=\(Int(ladder.divider)) spacers=\(spacerString)"
+                )
+            }
         } else if summaryState == .dividerDropped {
             failures[key, default: 0] += 1
             let currentBackoff = backoff[key] ?? 20
@@ -450,23 +768,38 @@ final class CollapseController {
     }
 
     /// Resolves the honored unit by applying cached caps or running a search.
-    func resolve(_ dividers: [ControlItem]) async {
+    func resolve(_ dividers: [ControlItem], onRefusal: (() -> Void)? = nil) async {
+        if let onRefusal {
+            self.onRefusal = onRefusal
+        }
+
         let collapsedDividers = dividers.filter {
             $0.isAddedToMenuBar && $0.isVisible && $0.state == .hideItems
         }
         guard !collapsedDividers.isEmpty else {
             return
         }
+
+        if hasPreparedSnapshot {
+            hasPreparedSnapshot = false
+        } else {
+            guard snapshotHiddenBlock(dividers: collapsedDividers) else {
+                return
+            }
+        }
+
         if isSearching {
             pendingCheck = true
             return
         }
+
         let widths = NSScreen.screens.map(\.frame.width)
         let key = configurationKey(for: widths)
         if let displayCaps = caps[key], !displayCaps.isEmpty {
             for divider in collapsedDividers {
                 divider.reapplyCollapseLength()
             }
+            anchorBlock()
             try? await Task.sleep(for: Self.settleDelay)
             await check(collapsedDividers)
         } else {

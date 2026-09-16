@@ -198,6 +198,7 @@ final class AppState: ObservableObject {
         updatesManager.performSetup()
         userNotificationManager.performSetup()
         if MenuBarPlatform.usesMenuBarAgent {
+            CollapseController.shared.repairIfNeeded()
             CollapseController.shared.installObservers(appState: self)
             Task {
                 try? await Task.sleep(for: .seconds(2))

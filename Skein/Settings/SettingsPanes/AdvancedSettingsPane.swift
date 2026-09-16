@@ -26,8 +26,13 @@ struct AdvancedSettingsPane: View {
         }
     }
 
+    @ObservedObject private var collapseController = CollapseController.shared
+
     var body: some View {
         SkeinForm {
+            if MenuBarPlatform.usesMenuBarAgent, collapseController.collapseAnchorUnavailableReason != nil {
+                fullDiskAccessCard
+            }
             SkeinSection {
                 hideApplicationMenus
                 showSectionDividers
@@ -164,6 +169,23 @@ struct AdvancedSettingsPane: View {
                 Text(permission.title)
             }
             .frame(height: 22)
+        }
+    }
+
+    @ViewBuilder
+    private var fullDiskAccessCard: some View {
+        SkeinSection("Menu Bar Hiding") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Hiding menu bar items requires Full Disk Access on macOS 27 because macOS rewrites the menu bar order while items are hidden.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button("Open System Settings") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
         }
     }
 }

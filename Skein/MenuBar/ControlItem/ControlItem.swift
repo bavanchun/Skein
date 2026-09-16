@@ -202,7 +202,9 @@ final class ControlItem {
                     let widths = NSScreen.screens.map(\.frame.width)
                     let lengths = CollapseController.shared.spacerLengths(for: widths)
                     let collapsed = isVisible && isAddedToMenuBar && state == .hideItems
-                    spacers.ensureCount(lengths.count)
+                    if isAddedToMenuBar {
+                        spacers.ensureCount(lengths.count)
+                    }
                     spacers.apply(lengths: collapsed ? lengths : [])
                 }
             }

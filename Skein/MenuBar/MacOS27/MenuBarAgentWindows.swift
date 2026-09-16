@@ -53,18 +53,21 @@ enum MenuBarAgentWindows {
                 }
                 let isChevron = AXHelpers.description(for: child) == "Show Hidden Menu Bar Items"
                 var identifier: String?
+                var pid: pid_t?
                 let slotChildren = AXHelpers.children(for: child)
                 if
                     let firstChild = slotChildren.first,
                     AXHelpers.role(for: firstChild) == .button
                 {
                     identifier = AXHelpers.identifier(for: firstChild)
+                    pid = AXHelpers.processIdentifier(for: firstChild)
                 }
                 slots.append(
                     MenuBarLayoutMath.Slot(
                         frame: childFrame,
                         isChevron: isChevron,
-                        identifier: identifier
+                        identifier: identifier,
+                        pid: pid
                     )
                 )
             }

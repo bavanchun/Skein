@@ -53,4 +53,14 @@ enum AXHelpers {
     static func identifier(for element: UIElement) -> String? {
         queue.sync { try? element.attribute(.identifier) }
     }
+
+    static func processIdentifier(for element: UIElement) -> pid_t? {
+        queue.sync {
+            var pid: pid_t = 0
+            guard AXUIElementGetPid(element.element, &pid) == .success else {
+                return nil
+            }
+            return pid
+        }
+    }
 }

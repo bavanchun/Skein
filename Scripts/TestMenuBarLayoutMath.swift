@@ -199,6 +199,50 @@ struct TestMenuBarLayoutMath {
             "divider slot at a previous width reads as dropped"
         )
 
+        let hiddenPIDs: Set<pid_t> = [42]
+        let obsLeakedRight = Obs(bar: bar, slots: [
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
+            Slot(frame: CGRect(x: 1300, y: 0, width: 40, height: 24), isChevron: false, identifier: "LeakedApp", pid: 42)
+        ])
+        let leakedRight = MenuBarLayoutMath.leakedProcessIdentifiers(
+            in: obsLeakedRight,
+            dividerIdentifier: dividerID,
+            dividerSlotWidth: dividerWidth,
+            ownIdentifiers: ownIDs,
+            ownSlotWidths: ownWidths,
+            hiddenPIDs: hiddenPIDs
+        )
+        expect(leakedRight == [42], "slot with a leaked pid right of the block is reported")
+
+        let obsLeakedLeft = Obs(bar: bar, slots: [
+            Slot(frame: CGRect(x: 800, y: 0, width: 40, height: 24), isChevron: false, identifier: "LeftApp", pid: 42),
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID)
+        ])
+        let leakedLeft = MenuBarLayoutMath.leakedProcessIdentifiers(
+            in: obsLeakedLeft,
+            dividerIdentifier: dividerID,
+            dividerSlotWidth: dividerWidth,
+            ownIdentifiers: ownIDs,
+            ownSlotWidths: ownWidths,
+            hiddenPIDs: hiddenPIDs
+        )
+        expect(leakedLeft.isEmpty, "same pid left of the block is not reported")
+
+        let obsLeakedPile = Obs(bar: bar, slots: [
+            Slot(frame: CGRect(x: 1000, y: 0, width: 264, height: 24), isChevron: false, identifier: dividerID),
+            Slot(frame: CGRect(x: 1300, y: 0, width: 40, height: 24), isChevron: false, identifier: "AppA", pid: 42),
+            Slot(frame: CGRect(x: 1305, y: 0, width: 40, height: 24), isChevron: false, identifier: "AppB", pid: 42)
+        ])
+        let leakedPile = MenuBarLayoutMath.leakedProcessIdentifiers(
+            in: obsLeakedPile,
+            dividerIdentifier: dividerID,
+            dividerSlotWidth: dividerWidth,
+            ownIdentifiers: ownIDs,
+            ownSlotWidths: ownWidths,
+            hiddenPIDs: hiddenPIDs
+        )
+        expect(leakedPile.isEmpty, "leaked pid in an overflow pile is not reported")
+
         if failures == 0 {
             print("PASS")
         } else {

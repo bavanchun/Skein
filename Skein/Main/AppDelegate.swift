@@ -62,6 +62,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard
+            MenuBarPlatform.usesMenuBarAgent,
+            let appState,
+            appState.menuBarManager.sections.contains(where: \.isHidden)
+        else {
+            return .terminateNow
+        }
+
+        for section in appState.menuBarManager.sections {
+            section.show()
+        }
+
+        Task {
+            let deadline = Date().addingTimeInterval(1.5)
+            let shownDistance = CollapseController.shared.shownHItemDistance
+            while Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(100))
+                if
+                    let shownDistance,
+                    let table = LayoutTableFile.readFromDisk(),
+                    let key = table.keys.first(where: {
+                        $0.hasPrefix("status:") && $0.hasSuffix("::\(ControlItem.Identifier.hidden.rawValue)")
+                    }),
+                    let dist = table[key],
+                    abs(dist - shownDistance) <= 1.0
+                {
+                    break
+                }
+            }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         // Deactivate and set the policy to accessory when all windows are closed.
         appState?.deactivate(withPolicy: .accessory)
