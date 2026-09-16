@@ -493,6 +493,18 @@ extension EventManager {
         else {
             return false
         }
+        if MenuBarPlatform.usesMenuBarAgent {
+            let items = MenuBarItem.getMenuBarItems(
+                on: screen.displayID,
+                onScreenOnly: true,
+                activeSpaceOnly: true
+            )
+            return items.contains { item in
+                (item.ownerPID != getpid() || item.info == .skeinIcon) &&
+                item.frame.width < 400 &&
+                item.frame.contains(mouseLocation)
+            }
+        }
         let menuBarItems = MenuBarItem.getMenuBarItems(on: screen.displayID, onScreenOnly: true, activeSpaceOnly: true)
         return menuBarItems.contains { $0.frame.contains(mouseLocation) }
     }

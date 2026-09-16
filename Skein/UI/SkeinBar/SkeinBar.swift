@@ -135,13 +135,30 @@ final class SkeinBarPanel: NSPanel {
 
                 guard
                     lowerBound <= upperBound,
-                    let section = appState.menuBarManager.section(withName: .visible),
-                    let windowID = section.controlItem.windowID,
-                    // Bridging.getWindowFrame is more reliable than ControlItem.windowFrame,
-                    // i.e. if the control item is offscreen.
-                    let itemFrame = Bridging.getWindowFrame(for: windowID)
+                    let section = appState.menuBarManager.section(withName: .visible)
                 else {
                     return originForRightOfScreen
+                }
+
+                let itemFrame: CGRect
+                if MenuBarPlatform.usesMenuBarAgent {
+                    guard
+                        let frame = section.controlItem.windowFrame,
+                        frame.height > 0
+                    else {
+                        return originForRightOfScreen
+                    }
+                    itemFrame = frame
+                } else {
+                    guard
+                        let windowID = section.controlItem.windowID,
+                        // Bridging.getWindowFrame is more reliable than ControlItem.windowFrame,
+                        // i.e. if the control item is offscreen.
+                        let frame = Bridging.getWindowFrame(for: windowID)
+                    else {
+                        return originForRightOfScreen
+                    }
+                    itemFrame = frame
                 }
 
                 return CGPoint(x: (itemFrame.midX - frame.width / 2).clamped(to: lowerBound...upperBound), y: originY)

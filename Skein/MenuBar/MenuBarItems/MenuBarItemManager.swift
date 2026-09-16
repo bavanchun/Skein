@@ -3,6 +3,7 @@
 //  Skein
 //
 
+import ApplicationServices
 import Cocoa
 import Combine
 
@@ -78,6 +79,15 @@ final class MenuBarItemManager: ObservableObject {
         /// The window of the item's shown interface.
         let shownInterfaceWindow: WindowInfo?
 
+        /// The name of the section temporarily revealed on macOS 27.
+        var sectionName: MenuBarSection.Name?
+
+        /// The date when this context was created.
+        var creationDate: Date
+
+        /// The process identifier of the application that created the item.
+        var pid: pid_t?
+
         /// A Boolean value that indicates whether the menu bar item's interface is showing.
         var isShowingInterface: Bool {
             guard let currentWindow = shownInterfaceWindow.flatMap({ WindowInfo(windowID: $0.windowID) }) else {
@@ -91,6 +101,22 @@ final class MenuBarItemManager: ObservableObject {
             } else {
                 currentWindow.isOnScreen
             }
+        }
+
+        init(
+            info: MenuBarItemInfo,
+            returnDestination: MoveDestination,
+            shownInterfaceWindow: WindowInfo?,
+            sectionName: MenuBarSection.Name? = nil,
+            creationDate: Date = Date(),
+            pid: pid_t? = nil
+        ) {
+            self.info = info
+            self.returnDestination = returnDestination
+            self.shownInterfaceWindow = shownInterfaceWindow
+            self.sectionName = sectionName
+            self.creationDate = creationDate
+            self.pid = pid
         }
     }
 
@@ -1324,6 +1350,27 @@ extension MenuBarItemManager {
 extension MenuBarItemManager {
     /// Clicks the given menu bar item with the given mouse button.
     func click(item: MenuBarItem, with mouseButton: CGMouseButton) async throws {
+        if
+            MenuBarPlatform.usesMenuBarAgent,
+            case .accessibility(let ax) = item.backing
+        {
+            AXUIElementSetMessagingTimeout(ax.element, 0.5)
+            let preferred = mouseButton == .right ? "AXShowMenu" : (kAXPressAction as String)
+            var result = AXUIElementPerformAction(ax.element, preferred as CFString)
+            if
+                result == .actionUnsupported,
+                preferred != (kAXPressAction as String)
+            {
+                result = AXUIElementPerformAction(ax.element, kAXPressAction as CFString)
+            }
+            if result == .success || result == .cannotComplete {
+                Logger.itemManager.debug("click delivered result=\(result.rawValue)")
+                return
+            }
+            Logger.itemManager.error("click failed error=\(result.rawValue)")
+            throw EventError(code: .couldNotComplete, item: item)
+        }
+
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             throw EventError(code: .invalidEventSource, item: item)
         }
@@ -1442,6 +1489,73 @@ extension MenuBarItemManager {
         }
     }
 
+    /// Temporarily shows the given item on macOS 27 by directly revealing its section.
+    private func tempShowItemByRevealing(
+        _ item: MenuBarItem,
+        clickWhenFinished: Bool,
+        mouseButton: CGMouseButton
+    ) {
+        guard let appState else {
+            return
+        }
+        let sectionName = itemCache.section(for: item) ?? .hidden
+        if sectionName == .visible {
+            if clickWhenFinished {
+                Task {
+                    do {
+                        try await click(item: item, with: mouseButton)
+                    } catch {
+                        Logger.itemManager.error("click failed error=\(error)")
+                    }
+                }
+            }
+            return
+        }
+
+        guard let section = appState.menuBarManager.section(withName: sectionName) else {
+            return
+        }
+
+        let changed = section.revealForTemporaryUse()
+        let tempShowInterval = appState.settingsManager.advancedSettingsManager.tempShowInterval
+        if changed {
+            Logger.itemManager.info("temp-show revealed \(section.name.logString)")
+            let context = TempShownItemContext(
+                info: item.info,
+                returnDestination: .leftOfItem(item),
+                shownInterfaceWindow: nil,
+                sectionName: section.name,
+                creationDate: Date(),
+                pid: item.ownerPID
+            )
+            tempShownItemContexts.append(context)
+            runTempShownItemTimer(for: tempShowInterval)
+        } else if let index = tempShownItemContexts.firstIndex(where: { $0.sectionName == section.name }) {
+            tempShownItemContexts[index] = TempShownItemContext(
+                info: item.info,
+                returnDestination: .leftOfItem(item),
+                shownInterfaceWindow: nil,
+                sectionName: section.name,
+                creationDate: Date(),
+                pid: item.ownerPID
+            )
+            runTempShownItemTimer(for: tempShowInterval)
+        }
+
+        Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            await refreshAccessibilitySnapshot()
+            let latestItem = accessibilitySnapshot.first { $0.info == item.info } ?? item
+            if clickWhenFinished {
+                do {
+                    try await click(item: latestItem, with: mouseButton)
+                } catch {
+                    Logger.itemManager.error("click failed error=\(error)")
+                }
+            }
+        }
+    }
+
     /// Temporarily shows the given item.
     ///
     /// The item is cached alongside a destination that it will be automatically returned
@@ -1454,6 +1568,11 @@ extension MenuBarItemManager {
     ///     clicked once movement is finished.
     ///   - mouseButton: The mouse button of the click.
     func tempShowItem(_ item: MenuBarItem, clickWhenFinished: Bool, mouseButton: CGMouseButton) {
+        if MenuBarPlatform.usesMenuBarAgent {
+            tempShowItemByRevealing(item, clickWhenFinished: clickWhenFinished, mouseButton: mouseButton)
+            return
+        }
+
         if case .window = item.backing {
             if
                 let windowID = item.windowID,
@@ -1553,11 +1672,70 @@ extension MenuBarItemManager {
         }
     }
 
+    /// Rehides temporarily shown items on macOS 27 by checking popup menu windows and concealing sections.
+    private func rehideTempShownItemsOnMacOS27() async {
+        guard !tempShownItemContexts.isEmpty else {
+            return
+        }
+
+        let tempShowInterval = appState?.settingsManager.advancedSettingsManager.tempShowInterval ?? 5
+        let popupLevel = Int(CGWindowLevelForKey(.popUpMenuWindow))
+        let onScreenWindows = WindowInfo.getOnScreenWindows()
+
+        var remainingContexts = [TempShownItemContext]()
+        var sectionsToConceal = Set<MenuBarSection.Name>()
+
+        for context in tempShownItemContexts {
+            guard let sectionName = context.sectionName else {
+                continue
+            }
+            let itemPID = context.pid ?? accessibilitySnapshot.first(where: { $0.info == context.info })?.ownerPID
+            let isMenuOpen: Bool
+            if let itemPID {
+                isMenuOpen = onScreenWindows.contains {
+                    $0.layer == popupLevel && $0.ownerPID == itemPID
+                }
+            } else {
+                isMenuOpen = false
+            }
+
+            let elapsed = Date().timeIntervalSince(context.creationDate)
+            if isMenuOpen && elapsed < 2 * tempShowInterval {
+                remainingContexts.append(context)
+            } else {
+                sectionsToConceal.insert(sectionName)
+            }
+        }
+
+        let activeSections = Set(remainingContexts.compactMap(\.sectionName))
+        sectionsToConceal.subtract(activeSections)
+
+        for sectionName in sectionsToConceal {
+            if let section = appState?.menuBarManager.section(withName: sectionName) {
+                section.concealAfterTemporaryUse()
+                Logger.itemManager.info("temp-show concealed")
+            }
+        }
+
+        tempShownItemContexts = remainingContexts
+        if !remainingContexts.isEmpty {
+            runTempShownItemTimer(for: 1)
+        } else {
+            tempShownItemsTimer?.invalidate()
+            tempShownItemsTimer = nil
+        }
+    }
+
     /// Rehides all temporarily shown items.
     ///
     /// If an item is currently showing its interface, this method waits for the
     /// interface to close before hiding the items.
     func rehideTempShownItems() async {
+        if MenuBarPlatform.usesMenuBarAgent {
+            await rehideTempShownItemsOnMacOS27()
+            return
+        }
+
         itemMoveCount += 1
         defer {
             itemMoveCount -= 1
