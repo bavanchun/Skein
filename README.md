@@ -24,6 +24,18 @@ Skein is signed with a personal development certificate rather than a Developer 
 
 Skein needs Accessibility and Screen Recording permissions to manage and capture menu bar items.
 
+### macOS 27
+
+On macOS 27, menu bar architecture changes require specific permissions depending on which features you use:
+
+- **Accessibility**: Required to hide, show, and interact with menu bar items.
+- **Screen Recording**: Required to capture and display menu bar item preview images in Menu Bar Layout, item search, and the Skein Bar. Hiding and showing items continues to work without it.
+- **Full Disk Access**: Required to rearrange menu bar items by writing to the system menu bar layout table.
+
+Applying a new layout reloads the menu bar once after a confirmation prompt. Layout backups are automatically created before each change and live in **Settings → Advanced → Menu Bar Layout Backups**, where previous layouts can be restored at any time.
+
+When rearranging items, dropping an item into an empty section or the leftmost slot is refused with a message asking you to drop it next to another item. This is deliberate: without an adjacent anchor item in the system layout table, the item would remain visible on the menu bar.
+
 ## Features
 
 ### Menu bar item management

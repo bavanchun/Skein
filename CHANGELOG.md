@@ -2,6 +2,24 @@
 
 All notable changes to Skein are recorded here. Skein follows Semantic Versioning; the bump rules and approval gate are defined in [`docs/release-guide.md`](docs/release-guide.md).
 
+## [2.0.0] - 2026-09-16
+
+### Added
+
+- Support for macOS 27: menu bar item hiding, showing, and drag-and-drop arrangement on macOS 27's updated menu bar architecture.
+- Menu bar layout backups: automatically creates timestamped backups of the system menu bar layout table before applying changes, with restore functionality available in Settings → Advanced.
+- Full Disk Access status banner: guides permission configuration in the Menu Bar Layout pane when running on macOS 27, where rearranging items requires Full Disk Access to write the layout table.
+
+### Changed
+
+- On macOS 27, Screen Recording permission is required to capture and display menu bar item preview images in Menu Bar Layout, item search, and the Skein Bar (section hiding and showing continues to work without it).
+- Applying a rearranged layout in Menu Bar Layout on macOS 27 reloads the menu bar once after explicit user confirmation.
+
+### Fixed
+
+- Fixed an issue where hidden menu bar sections did not hide on macOS 27 due to system changes in status item management and window ownership.
+- Fixed an issue where Menu Bar Layout showed an empty item list on macOS 27 due to changed status item window attribution.
+
 ## [1.4.0] - 2026-09-05
 
 ### Changed
@@ -116,7 +134,8 @@ macOS ties Accessibility and Screen Recording to an app's bundle identifier, so 
 
 Releases before this fork are documented in [jordanbaird/Ice](https://github.com/jordanbaird/Ice/releases).
 
-[Unreleased]: https://github.com/bavanchun/Skein/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/bavanchun/Skein/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/bavanchun/Skein/compare/v1.4.0...v2.0.0
 [1.4.0]: https://github.com/bavanchun/Skein/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/bavanchun/Skein/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/bavanchun/Skein/compare/v1.2.1...v1.2.2
