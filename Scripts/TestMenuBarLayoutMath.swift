@@ -313,6 +313,115 @@ enum TestMenuBarLayoutMath {
             "600 with AHItem 580, HItem 429.5 -> alwaysHidden"
         )
 
+        // Task 6.2 tests: applyMoves
+        typealias Move = MenuBarLayoutMath.Move
+
+        let baseTable: [String: Double] = [
+            "other:x": 42.0,
+            "module:Clock": 10.0,
+            "status:a::1": 50.0,
+            "status:b::1": 100.0,
+            "status:c::1": 200.0,
+        ]
+
+        // 1. Moving status:a::1 left of status:b::1 yields distance greater than b's
+        let moves1 = [Move.leftOf(key: "status:a::1", target: "status:b::1")]
+        let res1 = MenuBarLayoutMath.applyMoves(moves1, to: baseTable)
+        expect(res1 != nil, "applyMoves returns non-nil for valid move")
+        if let res1 {
+            expect(res1["other:x"] == 42.0, "unknown key other:x survives unchanged")
+            expect(res1["module:Clock"] == 10.0, "module:Clock unchanged")
+            let aDist = res1["status:a::1"] ?? 0
+            let bDist = res1["status:b::1"] ?? 0
+            expect(aDist > bDist, "moving status:a::1 left of status:b::1 yields a distance greater than b's")
+            expect(res1.count == baseTable.count, "the key count is unchanged")
+        }
+
+        // 2. A missing target returns nil
+        let missingTargetMoves = [Move.leftOf(key: "status:a::1", target: "missing:target")]
+        expect(MenuBarLayoutMath.applyMoves(missingTargetMoves, to: baseTable) == nil, "a missing target returns nil")
+
+        // 3. A missing key returns nil
+        let missingKeyMoves = [Move.leftOf(key: "missing:key", target: "status:b::1")]
+        expect(MenuBarLayoutMath.applyMoves(missingKeyMoves, to: baseTable) == nil, "a missing key returns nil")
+
+        // 4. Three consecutive moves into the same gap stay strictly ordered
+        let threeMovesTable: [String: Double] = [
+            "status:target::1": 100.0,
+            "status:item1::1": 10.0,
+            "status:item2::1": 20.0,
+            "status:item3::1": 30.0,
+        ]
+        let threeMoves = [
+            Move.leftOf(key: "status:item1::1", target: "status:target::1"),
+            Move.leftOf(key: "status:item2::1", target: "status:target::1"),
+            Move.leftOf(key: "status:item3::1", target: "status:target::1"),
+        ]
+        let threeRes = MenuBarLayoutMath.applyMoves(threeMoves, to: threeMovesTable)
+        expect(threeRes != nil, "three consecutive moves returns non-nil")
+        if let threeRes {
+            let tDist = threeRes["status:target::1"] ?? 0
+            let i1Dist = threeRes["status:item1::1"] ?? 0
+            let i2Dist = threeRes["status:item2::1"] ?? 0
+            let i3Dist = threeRes["status:item3::1"] ?? 0
+            expect(
+                tDist < i3Dist && i3Dist < i2Dist && i2Dist < i1Dist,
+                "three consecutive moves into the same gap stay strictly ordered"
+            )
+        }
+
+        // 5. rightOf moves stay ordered
+        let rightOfMoves = [Move.rightOf(key: "status:c::1", target: "status:b::1")]
+        let rightOfRes = MenuBarLayoutMath.applyMoves(rightOfMoves, to: baseTable)
+        expect(rightOfRes != nil, "rightOf move returns non-nil")
+        if let rightOfRes {
+            let cDist = rightOfRes["status:c::1"] ?? 0
+            let bDist = rightOfRes["status:b::1"] ?? 0
+            expect(cDist < bDist, "rightOf yields distance smaller than target's")
+        }
+
+        // 6. Renumbering when gap < 0.01: leftOf
+        let tightTableLeft: [String: Double] = [
+            "other:unknown": 500.0,
+            "module:Clock": 200.0,
+            "status:target::1": 100.0,
+            "status:neighbor::1": 100.008,
+            "status:toMove::1": 50.0,
+        ]
+        let tightMoveLeft = [Move.leftOf(key: "status:toMove::1", target: "status:target::1")]
+        let tightResLeft = MenuBarLayoutMath.applyMoves(tightMoveLeft, to: tightTableLeft)
+        expect(tightResLeft != nil, "tight gap leftOf returns non-nil")
+        if let tightResLeft {
+            expect(tightResLeft["other:unknown"] == 500.0, "renumbering leaves unknown key untouched")
+            expect(tightResLeft["module:Clock"] == 200.0, "renumbering leaves module key untouched")
+            let tDist = tightResLeft["status:target::1"] ?? 0
+            let mDist = tightResLeft["status:toMove::1"] ?? 0
+            let nDist = tightResLeft["status:neighbor::1"] ?? 0
+            expect(mDist == tDist + 1.0, "status key spaced 1.0 outward from target")
+            expect(nDist == tDist + 2.0, "neighbor status key spaced 2.0 outward from target")
+        }
+
+        // 7. Renumbering when gap < 0.01: rightOf
+        let tightTableRight: [String: Double] = [
+            "other:unknown": 500.0,
+            "module:Clock": 50.0,
+            "status:target::1": 100.0,
+            "status:neighbor::1": 99.992,
+            "status:toMove::1": 150.0,
+        ]
+        let tightMoveRight = [Move.rightOf(key: "status:toMove::1", target: "status:target::1")]
+        let tightResRight = MenuBarLayoutMath.applyMoves(tightMoveRight, to: tightTableRight)
+        expect(tightResRight != nil, "tight gap rightOf returns non-nil")
+        if let tightResRight {
+            expect(tightResRight["other:unknown"] == 500.0, "rightOf renumbering leaves unknown key untouched")
+            expect(tightResRight["module:Clock"] == 50.0, "rightOf renumbering leaves module key untouched")
+            let tDist = tightResRight["status:target::1"] ?? 0
+            let mDist = tightResRight["status:toMove::1"] ?? 0
+            let nDist = tightResRight["status:neighbor::1"] ?? 0
+            expect(mDist == tDist - 1.0, "status key spaced 1.0 outward (down) from target")
+            expect(nDist == tDist - 2.0, "neighbor status key spaced 2.0 outward (down) from target")
+        }
+
         if failures == 0 {
             print("PASS")
         } else {

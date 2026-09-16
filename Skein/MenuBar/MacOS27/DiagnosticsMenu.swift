@@ -16,8 +16,6 @@ enum DiagnosticsMenu {
     private static let logger = Logger(category: "Diagnostics")
     private static let sentinelName = "SkeinSpikeSentinel"
     private static let seedName = "SkeinSpikeSeed"
-    private static let clockIdentifier = "com.apple.menuextra.clock"
-    private static let agentBundleIdentifier = "com.apple.MenuBarAgent"
 
     /// Retains the menu item targets for the lifetime of the app.
     private static let target = Target()
@@ -27,6 +25,7 @@ enum DiagnosticsMenu {
     private static let actions: [(String, Selector)] = [
         ("Dump Layout Table", #selector(Target.dumpLayoutTable)),
         ("Dump Item Cache", #selector(Target.dumpItemCache)),
+        ("Move First Visible Item to Hidden", #selector(Target.moveFirstVisibleItemToHidden)),
         ("Spike: Table Access", #selector(Target.spikeTableAccess)),
         ("Spike: Sentinel Write", #selector(Target.spikeSentinelWrite)),
         ("Spike: Swap Two Items", #selector(Target.spikeSwapTwoItems)),
@@ -97,6 +96,10 @@ enum DiagnosticsMenu {
 
         @objc func dumpItemCache() {
             DiagnosticsMenu.dumpItemCache()
+        }
+
+        @objc func moveFirstVisibleItemToHidden() {
+            Task { await DiagnosticsMenu.moveFirstVisibleItemToHidden() }
         }
 
         @objc func spikeLegacySeed() {
@@ -229,7 +232,7 @@ enum DiagnosticsMenu {
         try? await Task.sleep(for: .seconds(2))
         logger.notice("spike swap applied-without-restart=\(isSwapped(firstKey: first.key, secondKey: second.key))")
 
-        let restarted = await restartMenuBarAgent()
+        let restarted = await MenuBarAgentRestarter.restart()
         try? await Task.sleep(for: .seconds(3))
         logger.notice("spike swap restart=\(restarted) applied-after-restart=\(isSwapped(firstKey: first.key, secondKey: second.key))")
 
@@ -238,7 +241,7 @@ enum DiagnosticsMenu {
             $0[second.key] = second.value
         }
         try? await Task.sleep(for: .seconds(1))
-        _ = await restartMenuBarAgent()
+        _ = await MenuBarAgentRestarter.restart()
         let restored = LayoutTableFile.readFromDisk().map { $0[first.key] == first.value && $0[second.key] == second.value } ?? false
         logger.notice("spike swap restored=\(restored)")
     }
@@ -308,33 +311,69 @@ enum DiagnosticsMenu {
         return CFPreferencesAppSynchronize(domain)
     }
 
-    // MARK: MenuBarAgent
+    // MARK: Actions
 
-    /// Restarts MenuBarAgent and waits until its replacement exposes the clock.
-    private static func restartMenuBarAgent() async -> Bool {
-        let oldPIDs = Set(NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleIdentifier).map(\.processIdentifier))
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-        process.arguments = ["MenuBarAgent"]
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            logger.error("diag killall failed: \(error.localizedDescription)")
-            return false
+    private static func moveFirstVisibleItemToHidden() async {
+        guard let table = LayoutTableFile.readFromDisk() ?? LayoutTableFile.readViaPreferences() else {
+            logger.notice("diag apply result=unreadable")
+            return
         }
-        let deadline = Date().addingTimeInterval(20)
-        while Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(500))
-            let agents = NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleIdentifier)
-            if
-                let agent = agents.first(where: { !oldPIDs.contains($0.processIdentifier) }),
-                containsIdentifier(clockIdentifier, in: AXUIElementCreateApplication(agent.processIdentifier), depth: 5)
-            {
-                return true
+
+        let hKey = "status:\(Constants.bundleIdentifier)::\(ControlItem.Identifier.hidden.rawValue)"
+        guard let hDistance = table[hKey] else {
+            logger.notice("diag apply result=noChange")
+            return
+        }
+
+        let candidates = table.compactMap { key, distance -> (key: String, distance: Double)? in
+            guard
+                let bundle = bundleIdentifier(fromStatusKey: key),
+                !bundle.hasPrefix("com.apple."),
+                bundle != Constants.bundleIdentifier,
+                distance < hDistance
+            else {
+                return nil
             }
+            return (key, distance)
+        }.sorted { $0.distance < $1.distance }
+
+        guard let first = candidates.first else {
+            logger.notice("diag apply result=noChange")
+            return
         }
-        return false
+
+        let move = MenuBarLayoutMath.Move.leftOf(key: first.key, target: hKey)
+
+        let alert = NSAlert()
+        alert.messageText = "Move First Visible Item to Hidden"
+        alert.informativeText = "Move item left of the hidden divider?"
+        alert.addButton(withTitle: "Move")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return
+        }
+
+        let result = await LayoutTableWriter.apply([move])
+        let caseName: String
+        switch result {
+        case .applied:
+            caseName = "applied"
+        case .refused(let reason):
+            caseName = "refused: \(reason)"
+        case .unreadable:
+            caseName = "unreadable"
+        case .noChange:
+            caseName = "noChange"
+        case .writeFailed:
+            caseName = "writeFailed"
+        case .backupFailed:
+            caseName = "backupFailed"
+        case .restartFailedRolledBack:
+            caseName = "restartFailedRolledBack"
+        case .restartFailedRollbackFailed:
+            caseName = "restartFailedRollbackFailed"
+        }
+        logger.notice("diag apply result=\(caseName)")
     }
 
     // MARK: Accessibility
@@ -382,16 +421,6 @@ enum DiagnosticsMenu {
 
     private static func children(of element: AXUIElement) -> [AXUIElement] {
         attribute(kAXChildrenAttribute, of: element) as? [AXUIElement] ?? []
-    }
-
-    private static func containsIdentifier(_ identifier: String, in element: AXUIElement, depth: Int) -> Bool {
-        if (attribute(kAXIdentifierAttribute, of: element) as? String) == identifier {
-            return true
-        }
-        guard depth > 0 else {
-            return false
-        }
-        return children(of: element).contains { containsIdentifier(identifier, in: $0, depth: depth - 1) }
     }
 
     private static func attribute(_ name: String, of element: AXUIElement) -> AnyObject? {

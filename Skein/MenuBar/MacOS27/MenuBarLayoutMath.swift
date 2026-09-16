@@ -397,4 +397,110 @@ enum MenuBarLayoutMath {
         }
         return .visible
     }
+
+    /// A relative move operation targeting a layout table key.
+    enum Move: Equatable {
+        case leftOf(key: String, target: String)
+        case rightOf(key: String, target: String)
+    }
+
+    /// Applies a sequence of relative moves to a layout table using read-modify-write semantics.
+    static func applyMoves(_ moves: [Move], to table: [String: Double]) -> [String: Double]? {
+        for move in moves {
+            let key: String
+            let target: String
+            switch move {
+            case .leftOf(let k, let t):
+                key = k
+                target = t
+            case .rightOf(let k, let t):
+                key = k
+                target = t
+            }
+            guard
+                table[key] != nil,
+                table[target] != nil
+            else {
+                return nil
+            }
+        }
+
+        var result = table
+
+        for move in moves {
+            switch move {
+            case .leftOf(let key, let target):
+                guard
+                    let t = result[target],
+                    result[key] != nil
+                else {
+                    return nil
+                }
+                let greaterDistances = result.compactMap { k, dist -> Double? in
+                    guard
+                        k != key,
+                        dist > t
+                    else {
+                        return nil
+                    }
+                    return dist
+                }
+                let neighbor = greaterDistances.min() ?? (t + 40)
+                result[key] = (t + neighbor) / 2
+                let gap = abs(neighbor - t)
+                if gap < 0.01 {
+                    let statusKeys = result.compactMap { k, dist -> (key: String, distance: Double)? in
+                        guard
+                            k.hasPrefix("status:"),
+                            dist > t,
+                            dist <= neighbor
+                        else {
+                            return nil
+                        }
+                        return (k, dist)
+                    }.sorted { $0.distance < $1.distance }
+                    for (index, item) in statusKeys.enumerated() {
+                        result[item.key] = t + Double(index + 1) * 1.0
+                    }
+                }
+
+            case .rightOf(let key, let target):
+                guard
+                    let t = result[target],
+                    result[key] != nil
+                else {
+                    return nil
+                }
+                let smallerDistances = result.compactMap { k, dist -> Double? in
+                    guard
+                        k != key,
+                        dist < t
+                    else {
+                        return nil
+                    }
+                    return dist
+                }
+                let neighbor = smallerDistances.max() ?? max(t - 40, 0.5)
+                result[key] = (t + neighbor) / 2
+                let gap = abs(t - neighbor)
+                if gap < 0.01 {
+                    let statusKeys = result.compactMap { k, dist -> (key: String, distance: Double)? in
+                        guard
+                            k.hasPrefix("status:"),
+                            dist < t,
+                            dist >= neighbor
+                        else {
+                            return nil
+                        }
+                        return (k, dist)
+                    }.sorted { $0.distance > $1.distance }
+                    for (index, item) in statusKeys.enumerated() {
+                        result[item.key] = t - Double(index + 1) * 1.0
+                    }
+                }
+            }
+        }
+
+        return result
+    }
 }
