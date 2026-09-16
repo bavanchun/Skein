@@ -121,3 +121,11 @@ The 38pt icon that stayed visible on the main display in all three spacer attemp
 - The divider was dropped because its key sits above the spacer keys, so it packs after every spacer. That is packing order, not spacer size.
 - Correct order, right to left: visible items, the divider, the divider's spacers largest first, then the hidden block.
 - Placement stops at the first item that does not fit the remaining space, while an item wider than the display's cap is skipped and the next one is still placed. Test items of 1200, 1200, 40 and 40, created in that order: the main display listed one 1216 slot and neither 56 slot, while both narrower displays skipped the 1216 terms and listed both 56 slots. So one spacer that does not fit also keeps everything further left off the bar, which is what makes a descending ladder reliable.
+
+## Order fix proven without a code change (2026-09-16)
+
+Two runs of the same build, changing only the layout table through CFPreferences.
+
+- **Spacer keys and hidden block interleaved:** the divider kept its slot on all three displays, but two hidden items still had slots on the main display, between spacers. The controller logged `collapse nothing to hide`, because its hidden-item detection reads process identifiers that are only exposed on one window.
+- **Hidden block moved strictly left of every spacer key:** the run logged `collapse honored` for the three-display configuration. The main display listed the divider, five spacers and an overflow affordance, with no hidden-item slot; both secondary displays listed the divider and no hidden-item slot.
+- So the collapse works on every display once the order is visible items, divider, spacers largest first, then the hidden block. Spacer sizing was never the blocker.
