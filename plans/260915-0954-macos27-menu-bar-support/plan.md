@@ -25,6 +25,7 @@ Evidence and decisions: [brainstorm](../reports/brainstorm-260915-1406-macos27-m
 |---|---|
 | Scope | Full rebuild (hide/show, enumeration, images, events, search, Skein Bar, temp-show, moving) |
 | Moving other apps' items | Full Disk Access only; no NSOpenPanel grant path; no synthetic Cmd-drag on macOS 27 |
+| Hiding on macOS 27 (2026-09-16) | Full Disk Access required. MenuBarAgent rewrites the layout order while items are hidden, so each hide anchors the hidden block through one verified table write. Without it, sections stay shown and a card explains why; Skein Bar, search and images still work |
 | Item images | Screen Recording required on macOS 27 for images, Menu Bar Layout and search images; hide/show works without it |
 | Applying a new order | Batch changes, restart MenuBarAgent once per apply |
 | Release | One release, 2.0.0, after all phases |
@@ -45,7 +46,7 @@ Full report: [Apple official sources](../reports/researcher-260915-1650-apple-of
 | # | Phase | Depends on | Effort | Status |
 |---|-------|-----------|--------|--------|
 | 1 | [Foundation and verification spikes](./phase-01-foundation-and-verification-spikes.md) | — | 2.5d | Partial (PR #35; 3 spikes pending, CLIFF_MARGIN partial) |
-| 2 | [Hide and show on macOS 27](./phase-02-hide-show-on-macos27.md) (rewritten: per-display measured unit) | 1 | 3d | Pending |
+| 2 | [Hide and show on macOS 27](./phase-02-hide-show-on-macos27.md) (rewritten: measured unit, then anchored hidden block) | 1 | 4d | In progress |
 | 3 | [Accessibility item enumeration and table reader](./phase-03-ax-item-enumeration-and-table-reader.md) | 1, 2 | 3d | Pending |
 | 4 | [Events, search, Skein Bar and temp-show](./phase-04-events-search-skein-bar-and-temp-show.md) | 3 | 2d | Pending |
 | 5 | [Item images with Screen Recording](./phase-05-item-images-with-screen-recording.md) | 3, 4 | 1.5d | Pending |

@@ -322,6 +322,78 @@ Changes, made by the coordinator:
 - Test: `ladderLengths(caps: [280, 588, 1496]) == (264, [1200])`.
 - Test: `ladderLengths(caps: [280, 900, 1000])` gives no spacer.
 
+## Revision 5: anchor the hidden block (2026-09-16, maintainer decision)
+
+Hardware runs showed that hiding by length reorders the user's layout: MenuBarAgent persists a distance only for items that have an on-bar slot, so dropped hidden items keep stale values and any Skein key that grows to their right overtakes them. On this machine `HItem` moved from 461.5 to 1656.5 and a running app's item moved into the visible section. Quitting Skein while collapsed does the same.
+
+Counsel: `plans/reports/kongming-260916-0150-macos27-length-hiding-reorders-layout.md`. Options presented to the maintainer: `plans/reports/coordinator-260916-0220-macos27-hiding-decision.md`.
+
+**Maintainer decision (2026-09-16):** hiding on macOS 27 requires Full Disk Access. Each hide anchors the hidden block with one verified table write. Without access, sections stay shown and a card explains why.
+
+This section adds to Revisions 2–4; their geometry, search and state rules stand. `LayoutBackups` and the table writer move here from phase 6.
+
+### Task R9: observation stability
+
+Runs on 2026-09-16 read "divider dropped" on the main display at every probed length, including 88, so searches disagreed between runs.
+
+- Raise `settleDelay` to 600 ms.
+- A probe concludes `dividerDropped` for a display only when two observations 200 ms apart agree. Otherwise the probe is unknown, and unknown changes nothing, as today.
+- Log each probe at `.debug` as today, adding `attempts=<1|2>`.
+- Record in the report how many probes needed the second observation.
+
+### Task R10: backups and the table writer (moved from phase 6)
+
+- **Create `Skein/MenuBar/MacOS27/LayoutBackups.swift`**, exactly as phase 6 task 6.3 specifies: a `LayoutBackups` directory under Application Support, `save(_:)`, `list()`, `load(_:)`, and the newest 10 kept.
+- **Create `Skein/MenuBar/MacOS27/LayoutTableWriter.swift`** with the read-modify-write half of phase 6 task 6.5:
+  - `enum WriteResult: Equatable { case written, unreadable, denied, noChange, verifyFailed, backupFailed }`.
+  - `static func write(_ table: [String: Double]) -> Bool`: `CFPreferencesSetAppValue` on `LayoutTableFile.preferencesDomain`, then `CFPreferencesAppSynchronize`, then poll `LayoutTableFile.readFromDisk()` every 200 ms for up to 2 s until it equals the written table.
+  - `static func apply(_ change: ([String: Double]) -> [String: Double]?) -> WriteResult`: check `LayoutTableFile.access()`, read fresh from disk, run `change`, refuse when the result is nil or its key count differs, back up once per app session before the first write, then `write`.
+  - Phase 6 adds `applyMoves`, the restarter, rollback and `restore`. Don't build those here.
+- Logs carry the result case and counts only. Table keys appear only inside `#if DEBUG`.
+
+### Task R11: the anchor
+
+- **Target:** `CollapseController.swift`, plus a new `Defaults` key `collapseHiddenBlock` (`CollapseHiddenBlock`), which Skein reads and writes.
+- **Snapshot.** Before the first length change of a hide, read the table.
+  - The block is every `status:` key whose distance is greater than the collapsing divider's, including Skein's own keys in that region, and never a `module:` key.
+  - Store the keys in order, largest distance first, in `CollapseHiddenBlock`. Never log them.
+- **Anchor write.** After the first collapse length is applied, call `LayoutTableWriter.apply`: for each block key still below 8192, set `8192 + rank * 8`. Repeat once after the final lengths are applied; it is a no-op unless a persist leaked a key.
+- **Show needs no write.** Every item becomes honored again and MenuBarAgent overwrites the anchored values.
+- **No access, unreadable table, or a failed verification.** Don't collapse: put the dividers back to `.showItems` through the section API, log once per launch `collapse anchor unavailable reason=<case>`, and publish the reason for the card in task R13.
+- **Log** `collapse anchored count=<n>` at `.notice`, counts only.
+
+### Task R12: show on quit and repair at launch
+
+- `applicationShouldTerminate` on macOS 27, when any section is collapsed: return `.terminateLater`, show every section, wait until the table's `HItem` distance matches its shown value or 1.5 s pass, then reply `true`.
+- In `AppState.performSetup()` on macOS 27, before the existing delayed `resolve`: read the table; when a key remembered in `CollapseHiddenBlock` has a distance at or below the divider's, re-anchor that block and log `collapse block repaired count=<n>`. This restores the user's own layout, so it needs no confirmation.
+
+### Task R13: the permission card
+
+- On macOS 27 only, in `Skein/Settings/SettingsPanes/AdvancedSettingsPane.swift`, show a card when the collapse reason from task R11 is set: hiding needs Full Disk Access on macOS 27 because macOS rewrites the menu bar order while items are hidden, with a button opening `x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles`.
+- Don't touch `PermissionsManager`, `allPermissions` or onboarding.
+
+### Task R14: leak guard
+
+- `MenuBarAgentWindows.observe` also records each slot's owning process id, read with `AXUIElementGetPid` on the nested `AXButton`, and `MenuBarLayoutMath.Slot` gains `pid: pid_t?`.
+- Before collapsing, record the pids of on-bar slots left of the divider, except Skein's own.
+- After each observation while collapsed, an on-bar slot right of the block whose pid is in that set is a leak: log `collapse leaked count=<n>` and re-run the anchor.
+- Tests: a slot with a leaked pid right of the block is reported; the same pid left of the block is not.
+
+### Task R15: small fixes
+
+- Gate `spacers.ensureCount` on `isAddedToMenuBar`, which is what created the stray `AHItemSpacer0` key.
+- When a collapse starts with no hidden pid at all, log `collapse nothing to hide` instead of `collapse honored`, so an empty pass is never mistaken for a working one.
+
+### Revised task 2.12 pass criteria (coordinator)
+
+These replace the Revision 4 criteria. The hidden section must contain at least one item of a running app.
+
+- Ten hide and show cycles, including app switches and one clock minute rollover: the order of third-party keys relative to `HItem` never changes, `collapse leaked` is 0, and each hide writes the anchor once.
+- Every hidden item has no on-bar slot on any display while collapsed, and is present left of the divider after showing.
+- Quit and relaunch: the order is unchanged, and `collapse block repaired` is 0 after a normal quit.
+- After a forced kill while collapsed, the next launch logs `collapse block repaired count=<n>` and the order is restored.
+- With Full Disk Access denied: no length change is applied, the card appears, and `collapse anchor unavailable` is logged once.
+
 ## Tasks
 
 ### Task 2.1 — Defaults keys
