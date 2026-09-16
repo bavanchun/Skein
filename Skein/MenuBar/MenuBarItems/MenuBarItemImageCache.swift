@@ -23,6 +23,18 @@ final class MenuBarItemImageCache: ObservableObject {
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
 
+    /// A set of menu bar item infos that have already been attempted for reveal-capture.
+    @MainActor
+    private var attemptedReveal = Set<MenuBarItemInfo>()
+
+    /// A Boolean value that indicates whether reveal-capture is currently executing.
+    @MainActor
+    private var isPerformingRevealCapture = false
+
+    /// The date of the last reveal-capture operation.
+    @MainActor
+    private var lastRevealCaptureDate: Date?
+
     /// Creates a cache with the given app state.
     init(appState: AppState) {
         self.appState = appState
@@ -40,35 +52,99 @@ final class MenuBarItemImageCache: ObservableObject {
         var c = Set<AnyCancellable>()
 
         if let appState {
-            Publishers.Merge3(
-                // Update every 3 seconds at minimum.
-                Timer.publish(every: 3, on: .main, in: .default).autoconnect().mapToVoid(),
+            if MenuBarPlatform.usesMenuBarAgent {
+                let hiddenIdentityPublisher = appState.itemManager.$itemCache
+                    .map { Set($0[.hidden].map(\.info)) }
+                    .removeDuplicates()
+                    .mapToVoid()
 
-                // Update when the active space or screen parameters change.
                 Publishers.Merge(
+                    NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification).mapToVoid(),
+                    hiddenIdentityPublisher
+                )
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] in
+                    self?.attemptedReveal.removeAll()
+                }
+                .store(in: &c)
+
+                let timerPublisher = Timer.publish(every: 3, on: .main, in: .default)
+                    .autoconnect()
+                    .filter { [weak appState] _ in
+                        guard let appState else {
+                            return false
+                        }
+                        let nav = appState.navigationState
+                        return nav.isSkeinBarPresented ||
+                            nav.isSearchPresented ||
+                            (nav.isSettingsPresented && nav.settingsNavigationIdentifier == .menuBarLayout)
+                    }
+                    .mapToVoid()
+
+                let environmentPublisher = Publishers.Merge(
                     NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.activeSpaceDidChangeNotification),
                     NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
                 )
-                .mapToVoid(),
+                .mapToVoid()
 
-                // Update when the average menu bar color or cached items change.
-                Publishers.Merge(
+                let statePublisher = Publishers.Merge3(
                     appState.menuBarManager.$averageColorInfo.removeDuplicates().mapToVoid(),
-                    appState.itemManager.$itemCache.removeDuplicates().mapToVoid()
+                    appState.itemManager.$itemCache.removeDuplicates().mapToVoid(),
+                    appState.permissionsManager.screenRecordingPermission.$hasPermission.removeDuplicates().mapToVoid()
                 )
-            )
-            .throttle(for: 0.5, scheduler: DispatchQueue.main, latest: false)
-            .sink { [weak self] in
-                guard let self else {
-                    return
-                }
-                Task.detached {
-                    if ScreenCapture.cachedCheckPermissions() {
+
+                Publishers.Merge3(
+                    timerPublisher,
+                    environmentPublisher,
+                    statePublisher
+                )
+                .throttle(for: 0.5, scheduler: DispatchQueue.main, latest: false)
+                .sink { [weak self, weak appState] in
+                    guard
+                        let self,
+                        let appState
+                    else {
+                        return
+                    }
+                    guard appState.permissionsManager.screenRecordingPermission.hasPermission else {
+                        return
+                    }
+                    Task {
                         await self.updateCache()
                     }
                 }
+                .store(in: &c)
+            } else {
+                Publishers.Merge3(
+                    // Update every 3 seconds at minimum.
+                    Timer.publish(every: 3, on: .main, in: .default).autoconnect().mapToVoid(),
+
+                    // Update when the active space or screen parameters change.
+                    Publishers.Merge(
+                        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.activeSpaceDidChangeNotification),
+                        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+                    )
+                    .mapToVoid(),
+
+                    // Update when the average menu bar color or cached items change.
+                    Publishers.Merge(
+                        appState.menuBarManager.$averageColorInfo.removeDuplicates().mapToVoid(),
+                        appState.itemManager.$itemCache.removeDuplicates().mapToVoid()
+                    )
+                )
+                .throttle(for: 0.5, scheduler: DispatchQueue.main, latest: false)
+                .sink { [weak self] in
+                    guard let self else {
+                        return
+                    }
+                    Task.detached {
+                        if ScreenCapture.cachedCheckPermissions() {
+                            await self.updateCache()
+                        }
+                    }
+                }
+                .store(in: &c)
             }
-            .store(in: &c)
         }
 
         cancellables = c
@@ -86,6 +162,14 @@ final class MenuBarItemImageCache: ObservableObject {
         guard ScreenCapture.cachedCheckPermissions() else {
             return true
         }
+        if
+            MenuBarPlatform.usesMenuBarAgent,
+            section == .hidden || section == .alwaysHidden,
+            let controlItem = appState?.menuBarManager.section(withName: section)?.controlItem,
+            controlItem.state == .hideItems
+        {
+            return false
+        }
         let items = appState?.itemManager.itemCache[section] ?? []
         guard !items.isEmpty else {
             return false
@@ -100,6 +184,10 @@ final class MenuBarItemImageCache: ObservableObject {
     /// Captures the images of the current menu bar items and returns a dictionary containing
     /// the images, keyed by the current menu bar item infos.
     func createImages(for section: MenuBarSection.Name, screen: NSScreen) async -> [MenuBarItemInfo: CGImage] {
+        if MenuBarPlatform.usesMenuBarAgent {
+            return await createImagesFromStrip(for: section, screen: screen)
+        }
+
         guard let appState else {
             return [:]
         }
@@ -191,6 +279,71 @@ final class MenuBarItemImageCache: ObservableObject {
         return images
     }
 
+    /// Captures menu bar item images from the menu bar strip for the given section and screen.
+    @MainActor
+    private func createImagesFromStrip(
+        for section: MenuBarSection.Name,
+        screen: NSScreen
+    ) async -> [MenuBarItemInfo: CGImage] {
+        guard let appState else {
+            return [:]
+        }
+        guard let menuBarSection = appState.menuBarManager.section(withName: section) else {
+            return [:]
+        }
+        if section == .hidden || section == .alwaysHidden {
+            if menuBarSection.controlItem.state == .hideItems {
+                return [:]
+            }
+        }
+
+        await appState.itemManager.refreshAccessibilitySnapshot()
+
+        let sectionItems = appState.itemManager.itemCache[section]
+        let sectionInfos = Set(sectionItems.map(\.info))
+        let snapshot = appState.itemManager.accessibilitySnapshot
+
+        let mainHeight = NSScreen.screens.first { $0.frame.origin == .zero }?.frame.height ?? screen.frame.height
+        let screenBounds = CGRect(
+            x: screen.frame.minX,
+            y: mainHeight - screen.frame.maxY,
+            width: screen.frame.width,
+            height: screen.frame.height
+        )
+
+        let targetItems = snapshot.filter { item in
+            guard sectionInfos.contains(item.info) else {
+                return false
+            }
+            guard
+                item.frame.width > 0,
+                item.frame.width < 400
+            else {
+                return false
+            }
+            return screenBounds.intersects(item.frame) &&
+                item.frame.minX >= screen.frame.minX &&
+                item.frame.maxX <= screen.frame.maxX
+        }
+
+        guard !targetItems.isEmpty else {
+            return [:]
+        }
+
+        guard let capture = await MenuBarStripCapture.capture(screen: screen) else {
+            return [:]
+        }
+
+        var result = [MenuBarItemInfo: CGImage]()
+        for item in targetItems {
+            if let cropped = MenuBarStripCapture.crop(capture, itemFrame: item.frame) {
+                result[item.info] = cropped
+            }
+        }
+
+        return result
+    }
+
     /// Updates the cache for the given sections, without checking whether caching is necessary.
     func updateCacheWithoutChecks(sections: [MenuBarSection.Name]) async {
         guard
@@ -208,7 +361,9 @@ final class MenuBarItemImageCache: ObservableObject {
             }
             let sectionImages = await createImages(for: section, screen: screen)
             guard !sectionImages.isEmpty else {
-                Logger.imageCache.warning("Update image cache failed for \(section.logString)")
+                if !MenuBarPlatform.usesMenuBarAgent {
+                    Logger.imageCache.warning("Update image cache failed for \(section.logString)")
+                }
                 continue
             }
             newImages.merge(sectionImages) { (_, new) in new }
@@ -257,6 +412,91 @@ final class MenuBarItemImageCache: ObservableObject {
         }
 
         await updateCacheWithoutChecks(sections: sections)
+
+        if MenuBarPlatform.usesMenuBarAgent {
+            await performRevealCaptureHiddenIfNeeded(sections: sections)
+        }
+    }
+
+    /// Performs reveal-capture for the hidden section on macOS 27 if any hidden items need images.
+    @MainActor
+    private func performRevealCaptureHiddenIfNeeded(sections: [MenuBarSection.Name]) async {
+        guard MenuBarPlatform.usesMenuBarAgent else {
+            return
+        }
+        guard sections.contains(.hidden) else {
+            return
+        }
+        guard let appState else {
+            return
+        }
+        guard
+            appState.permissionsManager.screenRecordingPermission.hasPermission,
+            CGPreflightScreenCaptureAccess()
+        else {
+            return
+        }
+
+        let isSkeinBarPresented = appState.navigationState.isSkeinBarPresented
+        let isSearchPresented = appState.navigationState.isSearchPresented
+        let isMenuBarLayoutPresented = appState.navigationState.isSettingsPresented &&
+            appState.navigationState.settingsNavigationIdentifier == .menuBarLayout
+        guard
+            isSkeinBarPresented ||
+            isSearchPresented ||
+            isMenuBarLayoutPresented
+        else {
+            return
+        }
+
+        guard !appState.itemManager.isMovingItem else {
+            return
+        }
+
+        guard !isPerformingRevealCapture else {
+            return
+        }
+
+        if let lastRevealCaptureDate {
+            guard Date().timeIntervalSince(lastRevealCaptureDate) >= 30 else {
+                return
+            }
+        }
+
+        let hiddenItems = appState.itemManager.itemCache[.hidden]
+        let missingInfos = hiddenItems.map(\.info).filter { info in
+            images[info] == nil && !attemptedReveal.contains(info)
+        }
+        guard !missingInfos.isEmpty else {
+            return
+        }
+
+        guard let hiddenSection = appState.menuBarManager.section(withName: .hidden) else {
+            return
+        }
+        guard let screen = NSScreen.main else {
+            return
+        }
+
+        lastRevealCaptureDate = Date()
+        isPerformingRevealCapture = true
+        let didChange = hiddenSection.revealForTemporaryUse()
+        defer {
+            if didChange {
+                hiddenSection.concealAfterTemporaryUse()
+            }
+            isPerformingRevealCapture = false
+        }
+
+        try? await Task.sleep(nanoseconds: 400_000_000)
+
+        let newImages = await createImagesFromStrip(for: .hidden, screen: screen)
+
+        attemptedReveal.formUnion(missingInfos)
+
+        Logger.imageCache.notice("reveal-capture hidden items=\(missingInfos.count) images=\(newImages.count)")
+
+        images.merge(newImages) { (_, new) in new }
     }
 
     /// Updates the cache for all sections, if necessary.

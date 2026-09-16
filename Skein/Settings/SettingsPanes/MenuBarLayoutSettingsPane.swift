@@ -59,8 +59,13 @@ struct MenuBarLayoutSettingsPane: View {
     @ViewBuilder
     private var missingScreenRecordingPermission: some View {
         VStack {
-            Text("Menu bar layout requires screen recording permissions")
-                .font(.title2)
+            if MenuBarPlatform.usesMenuBarAgent {
+                Text("Menu Bar Layout requires Screen Recording on macOS 27")
+                    .font(.title2)
+            } else {
+                Text("Menu bar layout requires screen recording permissions")
+                    .font(.title2)
+            }
 
             Button {
                 appState.navigationState.settingsNavigationIdentifier = .advanced
@@ -84,6 +89,16 @@ struct MenuBarLayoutSettingsPane: View {
 
                 LayoutBar(section: section)
                     .environmentObject(appState.imageCache)
+
+                if
+                    MenuBarPlatform.usesMenuBarAgent,
+                    section.name == .alwaysHidden
+                {
+                    Text("Show the always-hidden section once to load its images.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 2)
+                }
             }
         }
     }

@@ -43,6 +43,10 @@ final class LayoutBarItemView: NSView {
                     height: image.size.height / screen.backingScaleFactor
                 )
                 setFrameSize(size)
+            } else if MenuBarPlatform.usesMenuBarAgent {
+                let width = item.frame.width > 0 ? item.frame.width : max(NSStatusBar.system.thickness, 28)
+                let height = appState?.imageCache.menuBarHeight ?? NSScreen.main?.getMenuBarHeight() ?? NSStatusBar.system.thickness
+                setFrameSize(CGSize(width: width, height: height))
             } else {
                 setFrameSize(.zero)
             }
@@ -78,6 +82,12 @@ final class LayoutBarItemView: NSView {
         self.toolTip = item.displayName
         self.isEnabled = item.isMovable
 
+        if MenuBarPlatform.usesMenuBarAgent && (frame.width <= 0 || frame.height <= 0) {
+            let width = item.frame.width > 0 ? item.frame.width : max(NSStatusBar.system.thickness, 28)
+            let height = appState.imageCache.menuBarHeight ?? NSScreen.main?.getMenuBarHeight() ?? NSStatusBar.system.thickness
+            setFrameSize(CGSize(width: width, height: height))
+        }
+
         configureCancellables()
     }
 
@@ -92,13 +102,14 @@ final class LayoutBarItemView: NSView {
         if let appState {
             appState.imageCache.$images
                 .sink { [weak self] images in
-                    guard
-                        let self,
-                        let cgImage = images[item.info]
-                    else {
+                    guard let self else {
                         return
                     }
-                    image = NSImage(cgImage: cgImage, size: CGSize(width: cgImage.width, height: cgImage.height))
+                    if let cgImage = images[item.info] {
+                        image = NSImage(cgImage: cgImage, size: CGSize(width: cgImage.width, height: cgImage.height))
+                    } else if MenuBarPlatform.usesMenuBarAgent {
+                        image = nil
+                    }
                 }
                 .store(in: &c)
         }
@@ -123,12 +134,20 @@ final class LayoutBarItemView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         if !isDraggingPlaceholder {
-            image?.draw(
-                in: bounds,
-                from: .zero,
-                operation: .sourceOver,
-                fraction: isEnabled ? 1.0 : 0.67
-            )
+            if let image {
+                image.draw(
+                    in: bounds,
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: isEnabled ? 1.0 : 0.67
+                )
+            } else if MenuBarPlatform.usesMenuBarAgent {
+                let rect = bounds.insetBy(dx: 1.5, dy: 1.5)
+                let path = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
+                path.lineWidth = 1
+                NSColor.quaternaryLabelColor.setStroke()
+                path.stroke()
+            }
             if Bridging.responsivity(for: item.ownerPID) == .unresponsive {
                 let warningImage = NSImage.warning
                 let width: CGFloat = 15
@@ -171,7 +190,21 @@ final class LayoutBarItemView: NSView {
         pasteboardItem.setData(Data(), forType: .layoutBarItem)
 
         let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        draggingItem.setDraggingFrame(bounds, contents: image)
+        if let image {
+            draggingItem.setDraggingFrame(bounds, contents: image)
+        } else if MenuBarPlatform.usesMenuBarAgent {
+            let img = NSImage(size: bounds.size)
+            img.lockFocus()
+            let rect = NSRect(origin: .zero, size: bounds.size).insetBy(dx: 1.5, dy: 1.5)
+            let path = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
+            path.lineWidth = 1
+            NSColor.quaternaryLabelColor.setStroke()
+            path.stroke()
+            img.unlockFocus()
+            draggingItem.setDraggingFrame(bounds, contents: img)
+        } else {
+            draggingItem.setDraggingFrame(bounds, contents: image)
+        }
 
         beginDraggingSession(with: [draggingItem], event: event, source: self)
     }

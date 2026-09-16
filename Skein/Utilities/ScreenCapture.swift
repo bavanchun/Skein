@@ -10,6 +10,9 @@ import ScreenCaptureKit
 enum ScreenCapture {
     /// Returns a Boolean value that indicates whether the app has been granted screen capture permissions.
     static func checkPermissions() -> Bool {
+        if MenuBarPlatform.usesMenuBarAgent {
+            return CGPreflightScreenCaptureAccess()
+        }
         for item in MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true) {
             // Don't check items owned by Skein.
             if item.owningApplication == .current {
@@ -28,6 +31,9 @@ enum ScreenCapture {
     /// Subsequent calls either return the cached value, or recompute the permissions state before caching
     /// and returning it.
     static func cachedCheckPermissions(reset: Bool = false) -> Bool {
+        if MenuBarPlatform.usesMenuBarAgent {
+            return checkPermissions()
+        }
         enum Context {
             static var lastCheckResult: Bool?
         }
@@ -46,7 +52,7 @@ enum ScreenCapture {
     /// Requests screen capture permissions.
     static func requestPermissions() {
         if #available(macOS 15.0, *) {
-            // CGRequestScreenCaptureAccess() is broken on macOS 15. SCShareableContent requires
+            // CGRequestScreenCaptureAccess() is broken on macOS 15. ScreenCaptureKit requires
             // screen capture permissions, and triggers a request if the user doesn't have them.
             SCShareableContent.getWithCompletionHandler { _, _ in }
         } else {
