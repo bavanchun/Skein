@@ -49,9 +49,9 @@ Full report: [Apple official sources](../reports/researcher-260915-1650-apple-of
 | 2 | [Hide and show on macOS 27](./phase-02-hide-show-on-macos27.md) (rewritten: measured unit, then anchored hidden block) | 1 | 4d | In progress |
 | 3 | [Accessibility item enumeration and table reader](./phase-03-ax-item-enumeration-and-table-reader.md) | 1, 2 | 3d | Merged (PR #38) |
 | 4 | [Events, search, Skein Bar and temp-show](./phase-04-events-search-skein-bar-and-temp-show.md) | 3 | 2d | Merged (PR #40) |
-| 5 | [Item images with Screen Recording](./phase-05-item-images-with-screen-recording.md) | 3, 4 | 1.5d | Pending |
+| 5 | [Item images with Screen Recording](./phase-05-item-images-with-screen-recording.md) | 3, 4 | 1.5d | Merged (PR #43) |
 | 6 | [Layout table writer and Full Disk Access](./phase-06-layout-table-writer-and-full-disk-access.md) | 3 | 2.5d | Merged (PR #41) |
-| 7 | [Item moving](./phase-07-item-moving.md) | 4, 5, 6 | 2d | Pending |
+| 7 | [Item moving](./phase-07-item-moving.md) | 4, 5, 6 | 2d | Merged (PR #44; empty-section drop refused) |
 | 8 | [Release 2.0.0](./phase-08-release-2-0-0.md) | 1–7 | 1d | Pending |
 
 After phase 2 merges, the maintainer installs Skein Dev as the daily driver to accumulate real-world cliff evidence. That is not a release.

@@ -1,7 +1,7 @@
 ---
 phase: 7
 title: "Item moving"
-status: pending
+status: complete
 priority: P1
 effort: "2d"
 dependencies: [4, 5, 6]
