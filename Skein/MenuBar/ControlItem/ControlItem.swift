@@ -46,7 +46,10 @@ final class ControlItem {
     private let constraint: NSLayoutConstraint?
 
     /// The control item's identifier.
-    private let identifier: Identifier
+    let identifier: Identifier
+
+    /// Spacers used to extend the divider's span on wide displays on macOS 27.
+    private let spacers: CollapseSpacers?
 
     /// Storage for internal observers.
     private var cancellables = Set<AnyCancellable>()
@@ -59,6 +62,16 @@ final class ControlItem {
     /// The control item's window.
     var window: NSWindow? {
         statusItem.button?.window
+    }
+
+    /// The autosave name of the control item.
+    var autosaveName: String {
+        identifier.rawValue
+    }
+
+    /// The current length of the underlying status item.
+    var length: CGFloat {
+        statusItem.length
     }
 
     /// The identifier of the control item's window.
@@ -94,7 +107,9 @@ final class ControlItem {
             case .hidden:
                 StatusItemDefaults[.preferredPosition, autosaveName] = 1
             case .alwaysHidden:
-                break
+                if MenuBarPlatform.usesMenuBarAgent {
+                    StatusItemDefaults[.preferredPosition, autosaveName] = 2
+                }
             }
         }
 
@@ -102,6 +117,16 @@ final class ControlItem {
         self.statusItem.autosaveName = autosaveName
         self.identifier = identifier
         self.appState = appState
+
+        if
+            MenuBarPlatform.usesMenuBarAgent,
+            identifier == .hidden || identifier == .alwaysHidden
+        {
+            self.spacers = CollapseSpacers(dividerAutosaveName: autosaveName)
+            self.statusItem.button?.setAccessibilityIdentifier(autosaveName)
+        } else {
+            self.spacers = nil
+        }
 
         // This could break in a new macOS release, but we need this constraint in order to be
         // able to hide the control item when the `ShowSectionDividers` setting is disabled. A
@@ -158,7 +183,8 @@ final class ControlItem {
                     case .visible: Lengths.standard
                     case .hidden, .alwaysHidden:
                         switch state {
-                        case .hideItems: Lengths.expanded
+                        case .hideItems:
+                            MenuBarPlatform.usesMenuBarAgent ? CollapseController.shared.unit(for: NSScreen.screens.map(\.frame.width)) : Lengths.expanded
                         case .showItems: Lengths.standard
                         }
                     }
@@ -171,6 +197,15 @@ final class ControlItem {
                         size.width = 1
                         window.setContentSize(size)
                     }
+                }
+                if let spacers {
+                    let widths = NSScreen.screens.map(\.frame.width)
+                    let lengths = CollapseController.shared.spacerLengths(for: widths)
+                    let collapsed = isVisible && isAddedToMenuBar && state == .hideItems
+                    if isAddedToMenuBar {
+                        spacers.ensureCount(lengths.count)
+                    }
+                    spacers.apply(lengths: collapsed ? lengths : [])
                 }
             }
             .store(in: &c)
@@ -544,12 +579,29 @@ final class ControlItem {
         appState.updatesManager.checkForUpdates()
     }
 
+    /// Reapplies the collapse length by republishing the hiding state.
+    func reapplyCollapseLength() {
+        state = state
+    }
+
+    /// Applies a probe length directly to a collapsed divider without updating spacers.
+    func applyProbeLength(_ length: CGFloat) {
+        guard
+            isSectionDivider,
+            state == .hideItems
+        else {
+            return
+        }
+        statusItem.length = length
+    }
+
     /// Adds the control item to the menu bar.
     func addToMenuBar() {
         guard !isAddedToMenuBar else {
             return
         }
         statusItem.isVisible = true
+        reapplyCollapseLength()
     }
 
     /// Removes the control item from the menu bar.
@@ -563,6 +615,7 @@ final class ControlItem {
         let cached = StatusItemDefaults[.preferredPosition, autosaveName]
         statusItem.isVisible = false
         StatusItemDefaults[.preferredPosition, autosaveName] = cached
+        spacers?.apply(lengths: [])
     }
 }
 

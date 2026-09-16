@@ -49,28 +49,77 @@ struct VerifyMenuBar27 {
             expected = arguments[index + 1]
             arguments.removeSubrange(index...(index + 1))
         }
+        var rect: CGRect?
+        if let index = arguments.firstIndex(of: "--rect") {
+            guard index + 1 < arguments.count else {
+                throw fail("--rect needs a value x,y,w,h")
+            }
+            let parts = arguments[index + 1].split(separator: ",").compactMap {
+                Double($0.trimmingCharacters(in: .whitespaces))
+            }
+            guard parts.count == 4 else {
+                throw fail("--rect format must be x,y,w,h")
+            }
+            rect = CGRect(x: parts[0], y: parts[1], width: parts[2], height: parts[3])
+            arguments.removeSubrange(index...(index + 1))
+        }
         let showBundles = arguments.contains("--show-bundles")
         arguments.removeAll { $0 == "--show-bundles" }
 
         switch arguments.first {
         case "ax-dump":
             axDump(showBundles: showBundles)
+        case "ax-slots":
+            axSlots()
         case "strip-capture":
             guard arguments.count == 2 else {
                 throw fail("strip-capture needs an output path")
             }
-            try await stripCapture(to: URL(fileURLWithPath: arguments[1]))
+            try await stripCapture(to: URL(fileURLWithPath: arguments[1]), rect: rect)
         case "cliff-probe":
             guard arguments.count == 2, let length = Double(arguments[1]) else {
                 throw fail("cliff-probe needs a numeric length")
             }
             await cliffProbe(length: CGFloat(length))
         default:
-            throw fail("Usage: verify-menubar27 ax-dump|strip-capture <png>|cliff-probe <length> [--expect-contains <text>]")
+            throw fail("Usage: verify-menubar27 ax-dump|ax-slots|strip-capture <png> [--rect x,y,w,h]|cliff-probe <length> [--expect-contains <text>]")
         }
 
         if let expected, !output.contains(where: { $0.contains(expected) }) {
             throw fail("output does not contain \"\(expected)\"")
+        }
+    }
+
+    // MARK: ax-slots
+
+    static func axSlots() {
+        for window in agentWindows() {
+            guard let windowFrame = frame(of: window) else {
+                continue
+            }
+            emit("window frame=\(Int(windowFrame.minX)),\(Int(windowFrame.minY)),\(Int(windowFrame.width))x\(Int(windowFrame.height))")
+            for (index, child) in children(of: window).enumerated() {
+                guard let childFrame = frame(of: child) else {
+                    continue
+                }
+                let isChevron = (attribute(kAXDescriptionAttribute, of: child) as? String) == "Show Hidden Menu Bar Items"
+                let slotChildren = children(of: child)
+                let firstChild = slotChildren.first
+                let nestedId = firstChild.flatMap { attribute(kAXIdentifierAttribute, of: $0) as? String }
+                let hasIdentifier = nestedId != nil
+                var idValue = ""
+                if let nestedId {
+                    if nestedId.hasPrefix("ax-slots-")
+                        || nestedId.contains("Spacer")
+                        || nestedId.contains("HItem")
+                        || nestedId.contains("AHItem")
+                        || nestedId.contains("SItem")
+                    {
+                        idValue = " id=\(nestedId)"
+                    }
+                }
+                emit("  slot index=\(index) frame=\(Int(childFrame.minX)),\(Int(childFrame.minY)),\(Int(childFrame.width))x\(Int(childFrame.height)) chevron=\(isChevron) hasIdentifier=\(hasIdentifier)\(idValue)")
+            }
         }
     }
 
@@ -106,10 +155,15 @@ struct VerifyMenuBar27 {
 
     // MARK: strip-capture
 
-    static func stripCapture(to url: URL) async throws {
-        let bounds = CGDisplayBounds(CGMainDisplayID())
-        let rect = CGRect(x: bounds.minX, y: 0, width: bounds.width, height: 40)
-        let image = try await SCScreenshotManager.captureImage(in: rect)
+    static func stripCapture(to url: URL, rect: CGRect? = nil) async throws {
+        let captureRect: CGRect
+        if let rect {
+            captureRect = rect
+        } else {
+            let bounds = CGDisplayBounds(CGMainDisplayID())
+            captureRect = CGRect(x: bounds.minX, y: 0, width: bounds.width, height: 40)
+        }
+        let image = try await SCScreenshotManager.captureImage(in: captureRect)
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
             throw fail("cannot create \(url.path)")
         }
@@ -125,27 +179,119 @@ struct VerifyMenuBar27 {
     /// MenuBarAgent composites each honored item into a slot this much wider than its length.
     static let slotPadding: CGFloat = 16
 
+    /// Returns a unique key for an agent window based on its frame coordinates.
+    static func windowKey(for window: AXUIElement) -> String {
+        guard let f = frame(of: window) else {
+            return ""
+        }
+        return "\(Int(f.minX)),\(Int(f.minY)),\(Int(f.width))"
+    }
+
+    private struct ProbeSlot {
+        var frame: CGRect
+        var isChevron: Bool
+        var identifier: String?
+    }
+
+    private static func isOverflowed(_ slot: ProbeSlot, among slots: [ProbeSlot], bar: CGRect) -> Bool {
+        if slot.isChevron {
+            return true
+        }
+        if slot.frame.width <= 0 {
+            return true
+        }
+        if !slot.frame.intersects(bar) {
+            return true
+        }
+        var foundSelf = false
+        for other in slots {
+            guard !other.isChevron else {
+                continue
+            }
+            if !foundSelf, other.frame == slot.frame, other.identifier == slot.identifier {
+                foundSelf = true
+                continue
+            }
+            let overlap = min(slot.frame.maxX, other.frame.maxX) - max(slot.frame.minX, other.frame.minX)
+            if overlap > 1 {
+                return true
+            }
+        }
+        return false
+    }
+
     /// Probes whether each display's MenuBarAgent window honors an item of the given length.
-    ///
-    /// Honored on a display means that display's window gained a slot of width
-    /// `length + 16`. The chevron and the parked item window are reported separately.
     @MainActor
     static func cliffProbe(length: CGFloat) async {
-        // Without finishing launch, a script has no Accessibility server of its own.
         NSApplication.shared.finishLaunching()
-        let slotWidth = length + slotPadding
-        let before = agentWindows().map { matchingSlots(in: $0, width: slotWidth) }
         let item = NSStatusBar.system.statusItem(withLength: length)
+        item.button?.setAccessibilityIdentifier("verify-probe")
         item.button?.title = "ZZ"
         try? await Task.sleep(for: .seconds(2))
         let pid = ProcessInfo.processInfo.processIdentifier
         let axWidth = children(of: extrasBar(pid: pid)).compactMap { frame(of: $0)?.width }.max() ?? 0
         let parked = (item.button?.window?.frame.minY ?? 0) < 0
-        for (index, window) in agentWindows().enumerated() {
-            let displayWidth = Int(frame(of: window)?.width ?? 0)
-            let honored = matchingSlots(in: window, width: slotWidth) > (index < before.count ? before[index] : 0)
-            let chevrons = children(of: window).filter { (attribute(kAXDescriptionAttribute, of: $0) as? String) == "Show Hidden Menu Bar Items" }.count
-            emit("cliff-probe length=\(Int(length)) display=\(displayWidth) honored=\(honored) chevron=\(chevrons) parked=\(parked) axWidth=\(Int(axWidth))")
+
+        let dividerSlotWidth = length + slotPadding
+
+        for window in agentWindows() {
+            guard let windowBar = frame(of: window) else {
+                continue
+            }
+            let displayWidth = Int(windowBar.width)
+
+            var slots: [ProbeSlot] = []
+            for child in children(of: window) {
+                guard let childFrame = frame(of: child) else {
+                    continue
+                }
+                let isChevron = (attribute(kAXDescriptionAttribute, of: child) as? String) == "Show Hidden Menu Bar Items"
+                var identifier: String?
+                let slotChildren = children(of: child)
+                if let firstChild = slotChildren.first {
+                    let role = attribute(kAXRoleAttribute, of: firstChild) as? String
+                    if role == "AXButton" {
+                        identifier = attribute(kAXIdentifierAttribute, of: firstChild) as? String
+                    }
+                }
+                slots.append(ProbeSlot(frame: childFrame, isChevron: isChevron, identifier: identifier))
+            }
+
+            let sortedSlots = slots.sorted { $0.frame.minX < $1.frame.minX }
+
+            func isDivider(_ s: ProbeSlot) -> Bool {
+                if let id = s.identifier {
+                    return id == "verify-probe"
+                }
+                return abs(s.frame.width - dividerSlotWidth) <= 1
+            }
+
+            let state: String
+            if !sortedSlots.contains(where: isDivider) {
+                state = "dividerDropped"
+            } else {
+                let oursNotOverflowed = sortedSlots.filter {
+                    isDivider($0) && !isOverflowed($0, among: sortedSlots, bar: windowBar)
+                }
+                if oursNotOverflowed.isEmpty {
+                    state = "collapsed"
+                } else {
+                    let smallestOursMinX = oursNotOverflowed.map(\.frame.minX).min() ?? 0
+                    let hasVisibleThirdParty = sortedSlots.contains { slot in
+                        !isDivider(slot)
+                            && !isOverflowed(slot, among: sortedSlots, bar: windowBar)
+                            && slot.frame.minX < smallestOursMinX
+                    }
+                    if hasVisibleThirdParty {
+                        state = "itemsVisible"
+                    } else {
+                        state = "collapsed"
+                    }
+                }
+            }
+
+            let chevrons = slots.filter(\.isChevron).count
+            emit("cliff-probe length=\(Int(length)) display=\(displayWidth) state=\(state) chevron=\(chevrons) parked=\(parked) axWidth=\(Int(axWidth))")
         }
         NSStatusBar.system.removeStatusItem(item)
     }

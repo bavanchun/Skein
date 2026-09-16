@@ -25,6 +25,15 @@ On macOS 27, Skein can apply a set of item moves to MenuBarAgent's layout table 
 - Every MenuBarAgent restart requires explicit user confirmation (phase 7 owns the prompts; this phase exposes `apply` returning a result).
 - Logging: `Shared/Utilities/Logging.swift` logs publicly; never log table keys or bundle identifiers outside `#if DEBUG`.
 
+## Moved into phase 2 (2026-09-16)
+
+Hiding on macOS 27 now needs a verified table write on each hide, so these move into phase 2 and are already done when this phase starts:
+
+- Task 6.3, `LayoutBackups`.
+- Task 6.5's writer, minus the restart and rollback steps: the read-modify-write, the on-disk verification and the `ApplyResult` cases it needs.
+
+This phase keeps `applyMoves` (task 6.2), `MenuBarAgentRestarter` (task 6.4), the restart and rollback paths in `apply`/`restore`, the backups pane and the Debug move action. Read phase 2's Revision 5 before starting, and extend the existing types instead of creating parallel ones.
+
 ## Files to Create / Modify
 
 | Action | Path | Purpose |

@@ -63,6 +63,445 @@ Maintainer decision (2026-09-15): measure the unit per display at runtime from M
 | Modify | `Skein/Utilities/Defaults.swift` | `collapseUnitOverride`, `diagnosticsRemoteTrigger` keys |
 | Modify | `Scripts/VerifyMenuBar27.swift` | Key windows by frame; `strip-capture --rect` |
 
+## Revision 2: measured redesign (2026-09-16)
+
+The first implementation (commit `b042342`) failed the task 2.12 hardware run. Counsel: `plans/reports/kongming-260915-2356-macos27-collapse-redesign.md` in the main checkout. Measurements are in `reports/spike-results.md` under "Phase 2 hardware measurements".
+
+This section supersedes tasks 2.2–2.6 and 2.10, and the pass criteria of task 2.12. Tasks 2.1, 2.7, 2.8, 2.9 and 2.13 stand.
+
+### Why the first design failed
+
+- **The probe could never pass on an already-applied length.** `isHonored` measured a before/after slot delta, but `verifyCurrent` and `resolve()` on a cached unit probed a length that was already applied, so the delta was always zero. Each failure also fell back to 40pt, which guaranteed the next check failed, so app activations drove a re-search loop.
+- **Each probe lengthened 7 items, not 1.** The spacers followed the divider's unit, which produced overflow chevrons that the rule then counted as failure.
+- **One unit can't cover every display.** A single unit of 248pt with 6 spacers spans 1736pt, less than the roughly 2150pt free on the 3008pt display.
+
+### Measured facts this design relies on
+
+- **M1: overflowed items stay listed.** They keep AX slot frames that overlap each other in a pile beside the chevron. Frame intersection with the bar doesn't distinguish them, but overlap does.
+- **M3: slot identity.** Slots themselves carry no `AXIdentifier`.
+  - On the main display's window, each slot's single child is the app's `AXButton`, and `NSStatusBarButton.setAccessibilityIdentifier(_:)` is readable there.
+  - On non-main windows the child is an `AXApplication` with no identifier.
+  - So identity is matched by identifier on the window that exposes it, and by slot width elsewhere.
+- **Child order:** window children are not in x order. Always sort by `frame.minX`.
+- **M4: one status item takes different lengths per display.** A 248pt item and a 1400pt item were added together:
+  - the 3008pt window listed both slots (264 and 1416);
+  - the 1080pt and 1800pt windows listed only the 264 slot.
+  - A spacer that is too long for a display is dropped there, while the divider keeps its slot on every display.
+- **M5 (volatility across frontmost apps):** not measured. The design stays safe either way: checks are read-only, and a re-search is bounded and runs only when the divider is dropped.
+
+### Task R1: math and tests
+
+- **Target:** `MenuBarLayoutMath.swift`, `Scripts/TestMenuBarLayoutMath.swift`.
+- **Remove:** `DisplayObservation` (the old delta struct), `isHonored`, `spacerCount` and `coversWidest`.
+- **Keep:** `slotPadding`, `minimumUnit`, `maximumUnit`, `searchResolution`, `maximumSpacersPerDivider`, `startUnit` and `nextProbe`, with their existing tests.
+- **Add these types:**
+  - `struct Slot: Equatable { var frame: CGRect; var isChevron: Bool; var identifier: String? }`
+  - `struct DisplayObservation: Equatable { var bar: CGRect; var slots: [Slot] }`
+  - `enum DisplayState: Equatable { case collapsed, dividerDropped, itemsVisible }`
+- **Add `static func isOverflowed(_ slot: Slot, among slots: [Slot]) -> Bool`:** true when the slot is a chevron, has zero width, doesn't intersect its bar (callers pass the bar through the observation), or its frame overlaps another non-chevron slot's frame by more than 1pt horizontally.
+- **Add `static func state(of observation: DisplayObservation, dividerIdentifier: String, dividerSlotWidth: CGFloat, ownIdentifiers: Set<String>, ownSlotWidths: Set<CGFloat>) -> DisplayState`:**
+  - Sort slots by `minX`.
+  - `isOurs(s)`: `s.identifier` is in `ownIdentifiers`; when `s.identifier` is nil, the width is within 1pt of any value in `ownSlotWidths`.
+  - `isDivider(s)`: `s.identifier == dividerIdentifier`; when nil, the width is within 1pt of `dividerSlotWidth`.
+  - No divider slot gives `.dividerDropped`.
+  - Otherwise, collect ours that are not overflowed. If there are none, return `.collapsed` (the block sits in the overflow pile).
+  - Otherwise, if any non-ours, non-overflowed slot has `minX` below the smallest such `minX` of ours, return `.itemsVisible`. Else return `.collapsed`.
+- **Add `static func summary(_ states: [DisplayState]) -> DisplayState?`:** nil for an empty array. `dividerDropped` beats `itemsVisible`, which beats `collapsed`.
+- **Add `static func ladderLengths(caps: [CGFloat], margin: CGFloat = 16) -> (divider: CGFloat, spacers: [CGFloat])`:**
+  - `divider = clamp(min(caps) - margin, minimumUnit, maximumUnit)`.
+  - Spacers are the other caps minus the margin, clamped, sorted descending, and deduplicated when within 2pt of each other or of the divider, keeping at most `maximumSpacersPerDivider`.
+  - Empty caps return `(startUnit(screenWidths: []), [])`.
+- **Tests,** replacing the removed expectations:
+  - `state` covers:
+    - a block with nothing left of it gives collapsed;
+    - a missing divider gives dividerDropped;
+    - a 42pt non-ours slot left of the block gives itemsVisible;
+    - a chevron left of the block is ignored (collapsed);
+    - the divider inside an overlapping pile gives collapsed;
+    - a non-ours slot inside the pile left of the block is ignored (collapsed);
+    - a non-ours slot right of the block gives collapsed;
+    - identifier matching wins over a width clash.
+  - `ladderLengths(caps: [1496, 640, 264]) == (248, [1480, 624])`, `ladderLengths(caps: [264]) == (248, [])`, seven distinct caps give six spacers, and `ladderLengths(caps: [40]).divider == 40`.
+  - `summary`: `[collapsed, itemsVisible]` gives itemsVisible, `[collapsed, dividerDropped, itemsVisible]` gives dividerDropped, `[]` gives nil.
+- **Verify:** the task 2.2 command prints `PASS`.
+
+### Task R2: observe windows
+
+- **Target:** `MenuBarAgentWindows.swift`, `Shared/Utilities/AXHelpers.swift`.
+- **Signature:** `static func observe() -> [String: MenuBarLayoutMath.DisplayObservation]?`, keyed by the frame key as before.
+- **Validity gate:** return nil when:
+  - Accessibility isn't trusted;
+  - MenuBarAgent isn't running;
+  - the window count differs from `NSScreen.screens.count`;
+  - any window has zero children.
+- **Per child:**
+  - `frame`;
+  - `isChevron` by description;
+  - `identifier` is the `AXIdentifier` of the child's first child when that child's role is `AXButton`, otherwise nil.
+- Add `static func identifier(for:)` to `AXHelpers` using the `queue.sync` pattern. `description(for:)` stays.
+
+### Task R3: spacer lengths and identifiers
+
+- **Target:** `CollapseSpacers.swift`, `ControlItem.swift`.
+- **`CollapseSpacers`:**
+  - Replace `apply(activeCount:collapsed:unit:)` with `apply(lengths: [CGFloat])`: spacer `i` gets `lengths[i]` when present, else `restingLength`.
+  - New spacers set `button?.setAccessibilityIdentifier(autosaveName)`.
+  - Keep `ensureCount`, `removeAll`, the once-per-launch log and `restingLength = 1`.
+- **`ControlItem`:**
+  - The hidden and always-hidden control items set `statusItem.button?.setAccessibilityIdentifier(autosaveName)` when `MenuBarPlatform.usesMenuBarAgent`.
+  - In the sink, spacers get `lengths = CollapseController.shared.spacerLengths(for: widths)`, then `spacers.ensureCount(lengths.count)` and `spacers.apply(lengths: collapsed ? lengths : [])`. `collapsed` stays `isVisible && isAddedToMenuBar && state == .hideItems`.
+  - Add `func applyProbeLength(_ length: CGFloat)`. When the item is a divider in `.hideItems` it sets `statusItem.length = length` directly, without touching spacers.
+  - `removeFromMenuBar()` calls `spacers?.apply(lengths: [])`.
+  - The macOS ≤26 branch and both task 2.11 greps stay.
+
+### Task R4: collapse controller
+
+- **Target:** `CollapseController.swift`. In-memory only, never writes defaults, never calls `hide()`/`show()`.
+- **State, keyed by configuration key:**
+  - `caps: [String: [String: CGFloat]]` maps a display frame key to that display's honored divider length;
+  - `failures: [String: Int]`;
+  - `nextAllowedSearch: [String: Date]`;
+  - `backoff: [String: TimeInterval]`, starting at 20 s, doubling, capped at 300 s.
+  - Also `isSearching` and `pendingCheck`.
+- **`unit(for widths:)`:** the ladder divider of the key's caps when caps exist, else `startUnit(screenWidths:userOverride:)`, clamped by the override. While searching, it returns the length being probed.
+- **`spacerLengths(for widths:)`:** the ladder spacers when caps exist, else `[]`.
+- **`observeStates(dividers:)`:**
+  - Calls `MenuBarAgentWindows.observe()`.
+  - Nil means unknown: retry once after the settle delay, then return nil.
+  - Otherwise returns `[displayKey: DisplayState]` for the first divider. The hidden divider is used when collapsed, else the always-hidden one.
+  - Arguments: `dividerIdentifier` is the divider's autosave name; `dividerSlotWidth` is its current length + 16; `ownIdentifiers` and `ownSlotWidths` cover both dividers, all spacers and the Skein icon (`SItem`), whose width is its current length + 16.
+- **Search `search(dividers:)`, divider only, with spacers at rest:**
+  - Per display, track `low` (honored) and `high` (dropped).
+  - Start at `startUnit`. A probe sets the divider with `applyProbeLength`, waits 350 ms and observes. Displays not `dividerDropped` raise their `low` to the length; dropped ones lower their `high`.
+  - The next probe is `nextProbe(honored: low ?? minimumUnit, dropped: high)` for the display with the widest open bracket.
+  - Upward probing: a display whose `low` equals the probed length with no `high` probes again at `min(length * 2, maximumUnit)`, at most twice per search.
+  - Stop when no bracket is open or after 12 probes.
+  - `caps[key][display] = low` for every display with a `low`.
+  - When a display never had a `low`, log `collapse gave up screens=<key> display=<w>` and keep any previous caps.
+  - Then reapply every divider once, which applies the ladder. After `settleDelay` take one read-only observation and log exactly one line:
+    - `collapse honored screens=<key> divider=<d> spacers=<a>+<b>…` when the summary is collapsed;
+    - `collapse incomplete screens=<key> display=<w>` for each itemsVisible display;
+    - `collapse dropped screens=<key>` when the summary is dividerDropped.
+  - Each probe logs at `.debug`: `probe length=<l> display=<w> state=<s>`.
+- **`resolve(dividers:)`:** runs on setup, `hide()` and screen changes.
+  - When there are no collapsed dividers, return.
+  - When the key has caps, apply them (reapply) and run `check`.
+  - Otherwise, when backoff allows, run `search`.
+  - Coalesce while searching: set `pendingCheck`.
+- **`check(dividers:)`:** runs on app activation (debounced 400 ms) and after `resolve` applies cached caps. It is read-only.
+  - If any display is `dividerDropped` and `failures[key] < 3` and `Date() >= nextAllowedSearch[key]`, lower that display's cap by one `searchResolution` step: set `high` = the current divider length, then run `search`.
+  - A search that ends with any `dividerDropped` display increments `failures` and advances the backoff.
+  - A `collapse honored` result resets both.
+  - Unknown observations change nothing.
+- **`pendingCheck`:** after a search, run one `check`, never a search.
+- **Remove:** the before/after probe, `verifyCurrent`, the fall-to-`minimumUnit` path and the `pendingResolve -> resolve` tail call.
+
+### Task R5: harness
+
+- **Target:** `Scripts/VerifyMenuBar27.swift`.
+- **Add `ax-slots`:** for each MenuBarAgent window, print the frame, then for each child:
+  - its index, frame and chevron flag;
+  - whether a nested identifier is present;
+  - the nested identifier value only when it starts with the running script's own `ax-slots-` prefix or contains `Spacer`, `HItem`, `AHItem` or `SItem`.
+- **Change `cliff-probe <length>`:** add the item with identifier `verify-probe` and report `state=` per display using `MenuBarLayoutMath.state` semantics. The script can't import the app target, so inline the same overlap rule.
+- **Verify:** `xcrun swiftc -parse-as-library Scripts/VerifyMenuBar27.swift -o .ci-output/verify-menubar27` compiles with no warnings.
+
+### Task R6: implementer verification
+
+- Task 2.11 steps 1–7 stay, with these changes:
+  - step 6 also greps `CollapseSpacers.swift` for defaults writes;
+  - add `grep -c "verifyCurrent\|pendingResolve" Skein/MenuBar/MacOS27/CollapseController.swift`, which must print `0`;
+  - the self-review covers: no search from `check` without a dropped divider, the backoff and cap, no length change on an unknown observation, spacers at rest during probes, and the macOS ≤26 paths unchanged.
+
+### Revised task 2.12 pass criteria (coordinator)
+
+- **Before the run:**
+  - Remove the Karabiner/HItem position tie.
+  - Place the spacers right of `HItem` through CFPreferences read-modify-write after a backup. Spacers are created with autosave names, so they keep their table keys.
+- **Pass:**
+  - In every hidden capture on every display, no hidden-section icon is visible.
+  - The log has at least 4 `collapse honored` lines across configurations, 0 `collapse dropped`, 0 `collapse gave up`, and 0 `collapse incomplete` for the three-display configuration.
+  - Ten app switches while hidden produce no `probe` lines.
+
+## Revision 3: shared-space ladder and fill spacers (2026-09-16)
+
+Revision 2 (commit `791a6c8`) searched correctly and ended its loop. On hardware it logged `collapse dropped` because each spacer length was set from that display's single-item cap alone, as if items did not share space.
+
+Measured on three displays (`reports/spike-results.md`, "Shared menu bar space"):
+
+- MenuBarAgent places items one at a time from the trailing edge. An item is honored on a display only if its slot fits in that display's remaining space, and any item that doesn't fit is skipped, so smaller items further left can still be honored.
+- The divider-only search returned lengths of 1496 (3008pt main), 588 (1800pt notched) and 280 (1080pt).
+- The Revision 2 ladder applied a divider of 264 with spacers of 572 and 1480. The main display honored both spacers but dropped the divider, and the 1800pt display did the same with the 572 spacer.
+- Test items of 264, 292 and 892 gave the expected result on every display: the 1080pt window listed slot 280, the 1800pt window listed 280 and 308, and the main window listed 280, 308 and 908.
+- With those three items present, the main display also fit a fourth item of 600 (slot 616) but not one of 1200.
+- The main display's free space is larger than its single-item cap, so it needs fill spacers.
+
+This section supersedes the `ladderLengths` definition in task R1 and extends task R4. Everything else in Revision 2 stands.
+
+### Task R7: math
+
+- **Target:** `MenuBarLayoutMath.swift`, `Scripts/TestMenuBarLayoutMath.swift`.
+- **`ladderLengths(caps:margin:)`:**
+  - `caps` are honored divider lengths, one per display. Work in slot widths, where `slot(x) = x + slotPadding`, and return lengths.
+  - Sort caps ascending into `c1 ≤ … ≤ cn` and deduplicate caps within 2pt.
+  - Divider: `divider = clamp(c1 - margin, minimumUnit, maximumUnit)` and `used = slot(divider)`.
+  - For each `k` from 2 to n, in order:
+    - `spacerSlot = slot(ck) - used - margin`.
+    - Accept it only when `spacerSlot > slot(c(k-1))`, so it is dropped on every narrower display, and when `spacerSlot - slotPadding >= minimumUnit`.
+    - On accept: append `spacerSlot - slotPadding`, clamped to `maximumUnit`, then `used += spacerSlot`.
+    - On reject: skip that display.
+    - Stop at `maximumSpacersPerDivider`.
+  - Spacers come back in ascending order.
+- **Add `static func fillBounds(caps: [CGFloat], ladder: (divider: CGFloat, spacers: [CGFloat])) -> (lower: CGFloat, upper: CGFloat)?`,** in lengths:
+  - `lower`: the smallest length a fill spacer may take and still be dropped on every narrower display. With two or more caps, that is `second-largest cap + 1`; otherwise `minimumUnit`.
+  - `upper`: `min(largest cap, maximumUnit)`.
+  - Return nil when `upper < lower`.
+- **Tests,** replacing the Revision 2 `ladderLengths` expectations:
+  - `ladderLengths(caps: [280, 588, 1496])` gives divider 264 and spacers `[292, 892]`:
+    - slot 280;
+    - `604 - 280 - 16 = 308 > 296`, so length 292;
+    - `1512 - 588 - 16 = 908 > 604`, so length 892.
+  - `ladderLengths(caps: [280])` gives `(264, [])`.
+  - `ladderLengths(caps: [280, 300])` gives `(264, [])`, because `316 - 280 - 16 = 20` is not greater than 296.
+  - `ladderLengths(caps: [40])` gives divider 40.
+  - `fillBounds(caps: [280, 588, 1496], ladder: …)` gives `(589, 1496)`.
+  - `fillBounds(caps: [1496], ladder: …)` gives `(40, 1496)`.
+- **Verify:** the task 2.2 command prints `PASS`.
+
+### Task R8: fill spacers in the controller
+
+- **Target:** `CollapseController.swift`, and `CollapseSpacers.swift` only if an accessor is needed.
+- **State:** `fills: [String: [CGFloat]]`, keyed by configuration key. It is in-memory only, like `caps`.
+- **`spacerLengths(for:)`:** returns `ladder.spacers + fills[key]`, capped at `maximumSpacersPerDivider`.
+- **After a search:** apply the ladder, settle, observe. If the summary is `itemsVisible` and no display is `dividerDropped`, run `fill(dividers:)`.
+- **`fill(dividers:)`:**
+  - Take `bounds = fillBounds(...)` and `candidate = bounds.upper`.
+  - While spacers are under the cap and the probe count is under 12:
+    - Apply the ladder spacers + fills + `candidate` through the normal sink: set `probeFill = candidate`, then `reapplyCollapseLength()`.
+    - Settle, then observe.
+    - **Any display `dividerDropped`, or unknown:** set `candidate = floor((candidate + bounds.lower) / 2)` to a `searchResolution` multiple. Stop when it falls below `bounds.lower`.
+    - **Otherwise, the candidate is kept:** append it to `fills[key]`. Stop once no display is `itemsVisible`; if some still is, continue with the same `candidate`.
+  - Clear `probeFill` and apply the final lengths.
+  - Log `collapse honored screens=<key> divider=<d> spacers=<…>`, or `collapse incomplete screens=<key> display=<w>` for any remaining `itemsVisible`.
+- **Caches and backoff:**
+  - A later `check` that finds `dividerDropped` clears `fills[key]` before its search.
+  - `resolve` with cached caps applies the cached fills too.
+  - Fill probes count toward the same backoff and failure cap as search probes.
+- Spacers keep their autosave names and accessibility identifiers (`HItemSpacer<n>`). A fill spacer is just a later index.
+
+### Revised task 2.12 pass criteria (coordinator)
+
+These criteria replace the Revision 2 pass criteria.
+
+- **Setup:** with no Skein running, place every `HItemSpacer<n>` key right of `HItem` through CFPreferences read-modify-write, after a backup.
+- **Three-display configuration:**
+  - `collapse honored` appears.
+  - In each display's `ax-slots` dump, the divider slot is present.
+  - No hidden-section icon appears in any strip capture.
+- **Ten app switches while hidden:** no `probe` lines.
+- **Single-display configurations:** each logs `collapse honored`. These need the maintainer to detach displays.
+
+## Revision 4: widest-display spacer only (2026-09-16, coordinator)
+
+Hardware run of Revision 3 (commit `5aed46f`, divider width fix applied):
+
+- The search found caps of 280 (1080pt), 588 (1800pt) and 1432 (3008pt).
+- The ladder applied a divider of 264 and spacers of 292 and 828.
+- Main display: listed all three slots and was collapsed.
+- 1800pt notched display: listed the 308 spacer slot but no divider.
+  - The notch splits free space into a region left of the notch and a region of about 210pt right of it.
+  - An item fits if it fits in either region, so the single-item cap of 588 does not mean a 308 spacer and a 280 divider fit together.
+- 1080pt display: listed the 308 spacer slot but no divider. Its cap was underestimated when the 12-probe budget left the 280–392 bracket open.
+- Separately, a divider slot on the main display's window can keep its previous width while the new length is dropped. Revision 3's identifier-only match read that as present.
+
+Changes, made by the coordinator:
+
+- `state(of:)` matches the divider by identifier and width together. Test: "divider slot at a previous width reads as dropped".
+- `ladderLengths` gives a spacer only to the widest display, and only when the spacer's slot exceeds the second-widest cap's slot. Every narrower display then drops it regardless of notch regions.
+- Coverage on the widest display comes from that spacer plus fill spacers. `fillBounds` already uses the second-widest cap + 1 as its lower bound.
+- Test: `ladderLengths(caps: [280, 588, 1496]) == (264, [1200])`.
+- Test: `ladderLengths(caps: [280, 900, 1000])` gives no spacer.
+
+## Revision 5: anchor the hidden block (2026-09-16, maintainer decision)
+
+Hardware runs showed that hiding by length reorders the user's layout: MenuBarAgent persists a distance only for items that have an on-bar slot, so dropped hidden items keep stale values and any Skein key that grows to their right overtakes them. On this machine `HItem` moved from 461.5 to 1656.5 and a running app's item moved into the visible section. Quitting Skein while collapsed does the same.
+
+Counsel: `plans/reports/kongming-260916-0150-macos27-length-hiding-reorders-layout.md`. Options presented to the maintainer: `plans/reports/coordinator-260916-0220-macos27-hiding-decision.md`.
+
+**Maintainer decision (2026-09-16):** hiding on macOS 27 requires Full Disk Access. Each hide anchors the hidden block with one verified table write. Without access, sections stay shown and a card explains why.
+
+This section adds to Revisions 2–4; their geometry, search and state rules stand. `LayoutBackups` and the table writer move here from phase 6.
+
+### Task R9: observation stability
+
+Runs on 2026-09-16 read "divider dropped" on the main display at every probed length, including 88, so searches disagreed between runs.
+
+- Raise `settleDelay` to 600 ms.
+- A probe concludes `dividerDropped` for a display only when two observations 200 ms apart agree. Otherwise the probe is unknown, and unknown changes nothing, as today.
+- Log each probe at `.debug` as today, adding `attempts=<1|2>`.
+- Record in the report how many probes needed the second observation.
+
+### Task R10: backups and the table writer (moved from phase 6)
+
+- **Create `Skein/MenuBar/MacOS27/LayoutBackups.swift`**, exactly as phase 6 task 6.3 specifies: a `LayoutBackups` directory under Application Support, `save(_:)`, `list()`, `load(_:)`, and the newest 10 kept.
+- **Create `Skein/MenuBar/MacOS27/LayoutTableWriter.swift`** with the read-modify-write half of phase 6 task 6.5:
+  - `enum WriteResult: Equatable { case written, unreadable, denied, noChange, verifyFailed, backupFailed }`.
+  - `static func write(_ table: [String: Double]) -> Bool`: `CFPreferencesSetAppValue` on `LayoutTableFile.preferencesDomain`, then `CFPreferencesAppSynchronize`, then poll `LayoutTableFile.readFromDisk()` every 200 ms for up to 2 s until it equals the written table.
+  - `static func apply(_ change: ([String: Double]) -> [String: Double]?) -> WriteResult`: check `LayoutTableFile.access()`, read fresh from disk, run `change`, refuse when the result is nil or its key count differs, back up once per app session before the first write, then `write`.
+  - Phase 6 adds `applyMoves`, the restarter, rollback and `restore`. Don't build those here.
+- Logs carry the result case and counts only. Table keys appear only inside `#if DEBUG`.
+
+### Task R11: the anchor
+
+- **Target:** `CollapseController.swift`, plus a new `Defaults` key `collapseHiddenBlock` (`CollapseHiddenBlock`), which Skein reads and writes.
+- **Snapshot.** Before the first length change of a hide, read the table.
+  - The block is every `status:` key whose distance is greater than the collapsing divider's, including Skein's own keys in that region, and never a `module:` key.
+  - Store the keys in order, largest distance first, in `CollapseHiddenBlock`. Never log them.
+- **Anchor write.** After the first collapse length is applied, call `LayoutTableWriter.apply`: for each block key still below 8192, set `8192 + rank * 8`. Repeat once after the final lengths are applied; it is a no-op unless a persist leaked a key.
+- **Show needs no write.** Every item becomes honored again and MenuBarAgent overwrites the anchored values.
+- **No access, unreadable table, or a failed verification.** Don't collapse: put the dividers back to `.showItems` through the section API, log once per launch `collapse anchor unavailable reason=<case>`, and publish the reason for the card in task R13.
+- **Log** `collapse anchored count=<n>` at `.notice`, counts only.
+
+### Task R12: show on quit and repair at launch
+
+- `applicationShouldTerminate` on macOS 27, when any section is collapsed: return `.terminateLater`, show every section, wait until the table's `HItem` distance matches its shown value or 1.5 s pass, then reply `true`.
+- In `AppState.performSetup()` on macOS 27, before the existing delayed `resolve`: read the table; when a key remembered in `CollapseHiddenBlock` has a distance at or below the divider's, re-anchor that block and log `collapse block repaired count=<n>`. This restores the user's own layout, so it needs no confirmation.
+
+### Task R13: the permission card
+
+- On macOS 27 only, in `Skein/Settings/SettingsPanes/AdvancedSettingsPane.swift`, show a card when the collapse reason from task R11 is set: hiding needs Full Disk Access on macOS 27 because macOS rewrites the menu bar order while items are hidden, with a button opening `x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles`.
+- Don't touch `PermissionsManager`, `allPermissions` or onboarding.
+
+### Task R14: leak guard
+
+- `MenuBarAgentWindows.observe` also records each slot's owning process id, read with `AXUIElementGetPid` on the nested `AXButton`, and `MenuBarLayoutMath.Slot` gains `pid: pid_t?`.
+- Before collapsing, record the pids of on-bar slots left of the divider, except Skein's own.
+- After each observation while collapsed, an on-bar slot right of the block whose pid is in that set is a leak: log `collapse leaked count=<n>` and re-run the anchor.
+- Tests: a slot with a leaked pid right of the block is reported; the same pid left of the block is not.
+
+### Task R15: small fixes
+
+- Gate `spacers.ensureCount` on `isAddedToMenuBar`, which is what created the stray `AHItemSpacer0` key.
+- When a collapse starts with no hidden pid at all, log `collapse nothing to hide` instead of `collapse honored`, so an empty pass is never mistaken for a working one.
+
+### Revised task 2.12 pass criteria (coordinator)
+
+These replace the Revision 4 criteria. The hidden section must contain at least one item of a running app.
+
+- Ten hide and show cycles, including app switches and one clock minute rollover: the order of third-party keys relative to `HItem` never changes, `collapse leaked` is 0, and each hide writes the anchor once.
+- Every hidden item has no on-bar slot on any display while collapsed, and is present left of the divider after showing.
+- Quit and relaunch: the order is unchanged, and `collapse block repaired` is 0 after a normal quit.
+- After a forced kill while collapsed, the next launch logs `collapse block repaired count=<n>` and the order is restored.
+- With Full Disk Access denied: no length change is applied, the card appears, and `collapse anchor unavailable` is logged once.
+
+## Revision 6: several medium spacers (2026-09-16, coordinator)
+
+The anchor from Revision 5 works: one hide writes the table once, the hidden block moves to 8192 and up, and quitting while collapsed no longer reorders anything. What still fails is coverage on the main display, where a hidden item keeps its slot left of Skein's block.
+
+Measurements are in `reports/spike-results.md`, "Anchoring and spacer sizing". The short version:
+
+- One long spacer covers less than several medium ones, because an item longer than roughly 1500 is dropped on the main display and a dropped item covers nothing.
+- The main display does produce an overflow chevron once its free space runs out, so pushing items off it is possible.
+- Spacer size decides which displays keep the divider. With a divider of 264: spacers of 300 were honored on the narrower displays too, while spacers of 400 or 450 were honored only on the main display, where four of them fit alongside the divider.
+
+This supersedes `ladderLengths` from Revisions 3 and 4. Everything else stands.
+
+### Task R16: equal spacers, sized by a search
+
+- **Target:** `MenuBarLayoutMath.swift`, `Scripts/TestMenuBarLayoutMath.swift`, `CollapseController.swift`.
+- **Replace `ladderLengths(caps:margin:)`** with `spacerPlan(caps: [CGFloat], spacerLength: CGFloat) -> (divider: CGFloat, spacers: [CGFloat])`:
+  - `divider = clamp(smallest cap - margin, minimumUnit, maximumUnit)`, as today.
+  - `spacers` is `maximumSpacersPerDivider` copies of `spacerLength`, or none when there is only one display cap or `spacerLength` is not positive.
+  - Spacers that do not fit are dropped by the system, which is harmless.
+- **Add `static func firstSpacerLength(caps: [CGFloat], margin: CGFloat = 16) -> CGFloat`:** the second-largest cap plus `searchResolution`, clamped to `[minimumUnit, maximumUnit]`. With caps 280, 588 and 1496 that is 604.
+- **Add a spacer search to the controller**, run once per configuration key after the divider search, at most four attempts:
+  1. Apply `spacerPlan` with the current candidate, starting at `firstSpacerLength`.
+  2. Settle, observe, and count the honored spacer slots per display.
+  3. Accept when the divider is present on every display and no display other than the widest honors a spacer.
+  4. Otherwise raise the candidate by `searchResolution` and retry. On the fourth failure, keep the last candidate and log `collapse spacer search incomplete`.
+  - Cache the accepted length in `spacerLengths[key]`, in memory only, and reuse it with the cached caps.
+- **Keep the fill phase** for the widest display, with `fillBounds` unchanged.
+- **Tests:**
+  - `spacerPlan(caps: [280, 588, 1496], spacerLength: 400)` gives divider 264 and six spacers of 400.
+  - `spacerPlan(caps: [280], spacerLength: 400)` gives no spacers.
+  - `firstSpacerLength(caps: [280, 588, 1496]) == 604`.
+  - `firstSpacerLength(caps: [280]) == minimumUnit`.
+
+### Task R17: honesty about coverage
+
+- When the widest display still reports `itemsVisible` after the spacer search and the fill phase, log `collapse incomplete screens=<key> display=<w>` as today, and do not log `collapse honored`.
+- The Debug "Dump Item Cache" action also logs `diag collapse spacers=<n> length=<l>`, so a hardware run can show what was applied without reading the table.
+
+## Revision 7: pin the order, then one ladder (2026-09-16)
+
+Counsel: `plans/reports/kongming-260916-1040-macos27-main-display-hiding.md`. It supersedes Revision 6's `spacerPlan`, `firstSpacerLength`, the spacer search and the fill phase, and amends the anchor and the leak guard. Everything else stands.
+
+### What the hardware runs actually showed
+
+- The anchored hidden items never got a slot on the main display in any of the three attempts, so the anchor already hides them there.
+- The 38pt icon that stayed visible was not a hidden item. The coordinator's tie-break write at 02:13 put that app's key right of the divider, which makes it a visible-section item, and items packed before Skein's own items can never be pushed by them.
+- The divider lost its slot because its key sits above the spacer keys, so it packs after every spacer. That is packing order, not spacer size.
+- Free width on a display changes with the frontmost app, so a spacer set must cover a range of widths rather than match one measurement.
+
+### Task R18: pinned order in the anchor write
+
+- Required order, right to left: visible items, the collapsing divider, that divider's spacers largest first, then the hidden block.
+- `anchorBlock` rewrites the whole region above the collapsing divider on every anchor write, rather than only keys below 8192:
+  - `base = max(8192, floor(dividerDistance) + 8)`;
+  - spacer `i` gets `base + 8 * i`, largest spacer first;
+  - block entry of rank `r` gets `base + 48 + 8 * r`, in snapshot order.
+  - Idempotent writes return `noChange`, so a repeated anchor costs nothing.
+- `snapshotHiddenBlock` excludes Skein's own `*Spacer*` keys from the block, and also records, per display, the process identifiers of the visible items and the leftmost hidden slot width.
+- When the always-hidden section collapses too, everything above the collapsing divider, including its own divider, spacers and items, is re-ranked after the collapsing divider's spacers.
+
+### Task R19: the ladder
+
+- Replace `spacerPlan`, `firstSpacerLength` and `fillBounds` with `ladderPlan(caps: [CGFloat], hiddenSlotMin: CGFloat) -> (divider: CGFloat, spacers: [CGFloat])`:
+  - the divider is computed as today;
+  - `tMin = clamp(hiddenSlotMin, 32, 48)`;
+  - spacers, largest first, are `tMin * 2^k - slotPadding` for `k` from 5 down to 0;
+  - drop any term whose slot exceeds the widest cap plus `slotPadding`.
+- A descending binary ladder leaves a remainder smaller than the narrowest hidden slot for any free width below `64 * tMin`, so no search and no re-probing on app switches is needed.
+- Tests:
+  - `ladderPlan(caps: [280, 588, 1432], hiddenSlotMin: 40)` gives `(264, [1264, 624, 304, 144, 64, 24])`;
+  - `hiddenSlotMin: 32` gives `(264, [1008, 496, 240, 112, 48, 16])`;
+  - `caps: [280, 588]` drops the 1264 term and leaves five spacers;
+  - `caps: [280]` gives `(264, [])`;
+  - `hiddenSlotMin: 20` clamps to 32.
+
+### Task R20: one apply, one verdict
+
+- Delete `searchSpacers` and `fill`. After the divider search, apply the ladder once and judge it.
+- Inputs: `pre`, observed in `prepareForCollapse` before any length change, and `post`, two observations 200 ms apart after the apply and the settle delay, which must agree. When they disagree, retry once, then keep the lengths and log `collapse verdict unknown`.
+- Per display:
+  - `dividerLost` when the divider had a slot in `pre` and has none in `post`; a divider inside an overflow pile is not lost;
+  - `visiblePushed` when a process that had a visible on-bar slot in `pre` has no unoverflowed slot in `post`;
+  - `hiddenOnBar` counts unoverflowed `post` slots whose process is in the hidden set.
+- Verdicts:
+  - every display safe and no hidden item on the bar: log `collapse honored screens=<key> divider=<d> ladder=<tMin> spacersOnBar=<n>`;
+  - safe but some hidden items remain: keep the lengths and log `collapse incomplete screens=<key> display=<w> hiddenOnBar=<n> remainder=<pt>` once per configuration key;
+  - not safe: set the spacers back to rest, settle and judge again; if it is still not safe, refuse through the existing refusal callback and log `collapse refused reason=dividerLost|visiblePushed display=<w>`.
+- Nothing unsafe is ever left applied, so there is no loop that can end in a bad state. The divider search keeps its own rule, and `check` re-searches only when a divider is lost.
+
+### Task R21: identity on every display
+
+- `MenuBarAgentWindows.observe` reads the process identifier of each slot's nested child on every window, not only where that child is a button. Only the identifier stays button-only.
+- `isOurs` in `state` and in `leakedProcessIdentifiers` matches by process identifier first and falls back to width. Without this a 40pt ladder term is indistinguishable from a 40pt hidden item on two of the three windows.
+
+### Open maintainer question
+
+Raising the spacer budget from six to eight would quadruple the covered range and remove the incomplete case for any display width in existence. It is proposed, not decided.
+
+## Task 2.12 result (2026-09-16)
+
+Passed on the three-display configuration with a hidden section containing running apps' items. Evidence and counts are in `reports/spike-results.md` under "Task 2.12 hardware verification passed". Collapse, ten app switches, show, hide again, a normal quit and relaunch, and a forced kill and relaunch all behaved as specified, and the layout order never changed.
+
+Still open, to be recorded in the pull request rather than blocking it:
+
+- The launch repair path has no hardware evidence, because the order never drifted far enough to need it.
+- The single-display configurations and the hot-plug case need the maintainer to detach displays.
+- Raising the spacer budget from six to eight is proposed, not decided.
+
 ## Tasks
 
 ### Task 2.1 — Defaults keys

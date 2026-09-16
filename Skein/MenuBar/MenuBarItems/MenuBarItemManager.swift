@@ -313,6 +313,10 @@ extension MenuBarItemManager {
     /// Caches the current menu bar items if needed, ensuring that the control
     /// items are in the correct order.
     func cacheItemsIfNeeded() async {
+        // Window-based caching cannot see items on macOS 27; Accessibility enumeration replaces it.
+        guard !MenuBarPlatform.usesMenuBarAgent else {
+            return
+        }
         do {
             try await waitForItemsToStopMoving(timeout: .seconds(1))
         } catch is TaskTimeoutError {

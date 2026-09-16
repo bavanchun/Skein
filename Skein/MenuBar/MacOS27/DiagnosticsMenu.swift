@@ -26,6 +26,7 @@ enum DiagnosticsMenu {
 
     private static let actions: [(String, Selector)] = [
         ("Dump Layout Table", #selector(Target.dumpLayoutTable)),
+        ("Dump Item Cache", #selector(Target.dumpItemCache)),
         ("Spike: Table Access", #selector(Target.spikeTableAccess)),
         ("Spike: Sentinel Write", #selector(Target.spikeSentinelWrite)),
         ("Spike: Swap Two Items", #selector(Target.spikeSwapTwoItems)),
@@ -38,7 +39,11 @@ enum DiagnosticsMenu {
     /// On macOS 27 the Skein icon can be dropped from the menu bar, which makes the
     /// menu unreachable; this lets the same actions run from a script instead.
     /// Post `<bundle id>.diagnostics` with the action title as the object.
+    /// Enable with `defaults write com.ariadnev.Skein.dev DiagnosticsRemoteTrigger -bool true` and relaunch.
     static func installRemoteTrigger() {
+        guard Defaults.bool(forKey: .diagnosticsRemoteTrigger) else {
+            return
+        }
         // Setup can run more than once; a second observer would run every action twice.
         guard !isRemoteTriggerInstalled else {
             return
@@ -78,6 +83,10 @@ enum DiagnosticsMenu {
             DiagnosticsMenu.dumpLayoutTable()
         }
 
+        @objc func dumpItemCache() {
+            DiagnosticsMenu.dumpItemCache()
+        }
+
         @objc func spikeTableAccess() {
             DiagnosticsMenu.spikeTableAccess()
         }
@@ -100,6 +109,13 @@ enum DiagnosticsMenu {
     }
 
     // MARK: Actions
+
+    private static func dumpItemCache() {
+        let widths = NSScreen.screens.map(\.frame.width)
+        let spacers = CollapseController.shared.spacerLengths(for: widths)
+        let length = spacers.first ?? 0
+        logger.notice("diag collapse spacers=\(spacers.count) length=\(Int(length))")
+    }
 
     private static func dumpLayoutTable() {
         let access = LayoutTableFile.access()

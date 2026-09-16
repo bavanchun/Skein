@@ -196,6 +196,17 @@ final class MenuBarSection {
         else {
             return
         }
+        if MenuBarPlatform.usesMenuBarAgent {
+            // The hidden items' own distances have to be recorded before any
+            // collapse length is applied, and without them the section stays shown.
+            let dividers = [
+                appState.menuBarManager.section(withName: .hidden)?.controlItem,
+                appState.menuBarManager.section(withName: .alwaysHidden)?.controlItem,
+            ].compactMap { $0 }
+            guard CollapseController.shared.prepareForCollapse(dividers) else {
+                return
+            }
+        }
         skeinBarPanel?.close()
         switch name {
         case _ where useSkeinBar:
@@ -227,6 +238,18 @@ final class MenuBarSection {
         }
         appState.allowShowOnHover()
         stopRehideChecks()
+
+        if MenuBarPlatform.usesMenuBarAgent {
+            let dividers = [
+                appState.menuBarManager.section(withName: .hidden)?.controlItem,
+                appState.menuBarManager.section(withName: .alwaysHidden)?.controlItem,
+            ].compactMap { $0 }
+            Task {
+                await CollapseController.shared.resolve(dividers) { [weak self] in
+                    self?.show()
+                }
+            }
+        }
     }
 
     /// Toggles the visibility of the section.
