@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "Item images with Screen Recording"
-status: pending
+status: complete
 priority: P1
 effort: "1.5d"
 dependencies: [3, 4]
