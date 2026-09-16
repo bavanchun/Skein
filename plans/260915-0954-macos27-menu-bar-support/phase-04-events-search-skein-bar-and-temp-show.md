@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Events, search, Skein Bar and temp-show"
-status: pending
+status: complete
 priority: P1
 effort: "2d"
 dependencies: [3]
@@ -68,18 +68,23 @@ On macOS 27, show-on-click/hover/scroll, the right-click menu, Skein Bar positio
 - Steps: at the top:
   ```swift
   if MenuBarPlatform.usesMenuBarAgent, case .accessibility(let ax) = item.backing {
+      AXUIElementSetMessagingTimeout(ax.element, 0.5)
       let preferred = mouseButton == .right ? "AXShowMenu" : kAXPressAction
       var result = AXUIElementPerformAction(ax.element, preferred as CFString)
-      if result != .success, preferred != kAXPressAction {
+      if result == .actionUnsupported, preferred != kAXPressAction {
           result = AXUIElementPerformAction(ax.element, kAXPressAction as CFString)
       }
-      guard result == .success else {
-          Logger.itemManager.error("click failed \(item.logString) error=\(result.rawValue)")
-          throw EventError(code: .couldNotComplete, item: item)
+      if result == .success || result == .cannotComplete {
+          return
       }
-      return
+      Logger.itemManager.error("click failed error=\(result.rawValue)")
+      throw EventError(code: .couldNotComplete, item: item)
   }
   ```
+- Why `cannotComplete` counts as delivered: spike S9 measured a press that opened the item's menu and still
+  returned -25204, because the target app is inside synchronous menu tracking. Treating it as failure stalls the
+  main thread until the global Accessibility timeout, logs a false failure, and sends a second press on
+  right-click. The bounded messaging timeout keeps a menu-opening click from blocking the main thread.
 - Verify: no verification needed (task 4.7 covers it).
 
 ### Task 4.6 — Temp-show on macOS 27
