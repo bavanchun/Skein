@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Accessibility item enumeration and table reader"
-status: pending
+status: complete
 priority: P1
 effort: "3d"
 dependencies: [1, 2]

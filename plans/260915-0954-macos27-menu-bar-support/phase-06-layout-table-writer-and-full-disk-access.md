@@ -1,7 +1,7 @@
 ---
 phase: 6
 title: "Layout table writer and Full Disk Access"
-status: pending
+status: complete
 priority: P1
 effort: "2.5d"
 dependencies: [3]
@@ -86,7 +86,9 @@ This phase keeps `applyMoves` (task 6.2), `MenuBarAgentRestarter` (task 6.4), th
 - Steps:
   1. `enum ApplyResult: Equatable { case applied, refused(String), unreadable, noChange, writeFailed, backupFailed, restartFailedRolledBack, restartFailedRollbackFailed }`.
   2. `@MainActor static func apply(_ moves: [MenuBarLayoutMath.Move]) async -> ApplyResult`:
-     1. If `LIVE_RESORT=no`, `if let reason = MenuBarAgentRestarter.preflight() { return .refused(reason) }`.
+     1. Unconditionally `if let reason = MenuBarAgentRestarter.preflight() { return .refused(reason) }`, whatever
+        `LIVE_RESORT` measured. Refusing while a mouse button is held or a menu is open protects the write itself,
+        not only the restart, and under `LIVE_RESORT=yes` it is what makes a refusal observable at all.
      2. `guard LayoutTableFile.access() == .granted, let fresh = LayoutTableFile.readFromDisk() else { return .unreadable }`.
      3. `guard let next = MenuBarLayoutMath.applyMoves(moves, to: fresh), next.count == fresh.count else { return .noChange }`; return `.noChange` if `next == fresh`.
      4. `do { _ = try LayoutBackups.save(fresh) } catch { return .backupFailed }`.
