@@ -260,9 +260,13 @@ enum MenuBarLayoutMath {
         guard dedupedCaps.count >= 2 else {
             return minimumUnit
         }
+        // Two thirds of the second-widest display's cap: small enough that several
+        // spacers pack onto the widest display, large enough that narrower displays
+        // drop them. A spacer at or above that cap is dropped on the widest display
+        // too, and a dropped spacer covers nothing.
         let secondLargest = dedupedCaps[dedupedCaps.count - 2]
-        let candidate = secondLargest + searchResolution
-        return min(max(candidate, minimumUnit), maximumUnit)
+        let target = (secondLargest * 2 / 3 / searchResolution).rounded(.down) * searchResolution
+        return min(max(target, minimumUnit), maximumUnit)
     }
 
     /// Computes the search bounds for fill spacers in remaining display space.

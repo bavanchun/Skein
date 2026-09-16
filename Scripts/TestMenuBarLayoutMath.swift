@@ -58,7 +58,7 @@ enum TestMenuBarLayoutMath {
         )
 
         expect(
-            MenuBarLayoutMath.firstSpacerLength(caps: [280, 588, 1496]) == 604,
+            MenuBarLayoutMath.firstSpacerLength(caps: [280, 588, 1496]) == 384,
             "firstSpacerLength(caps: [280, 588, 1496]) == 604"
         )
 

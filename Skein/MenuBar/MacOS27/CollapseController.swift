@@ -549,8 +549,18 @@ final class CollapseController: ObservableObject {
                 break
             }
 
+            // A narrower display that honors a spacer needs a longer one; a divider
+            // that lost its slot means the spacers are eating the space it needs,
+            // which a shorter one leaves free.
             if attempt < 4 {
-                candidate += MenuBarLayoutMath.searchResolution
+                if narrowerHonorsSpacer {
+                    candidate += MenuBarLayoutMath.searchResolution
+                } else {
+                    candidate = max(
+                        candidate - MenuBarLayoutMath.searchResolution,
+                        MenuBarLayoutMath.minimumUnit
+                    )
+                }
             }
         }
 
