@@ -101,3 +101,14 @@ Skein Dev with the anchor implementation, then test items with Skein Dev quit. T
   - six of 400: the main display honored four spacers and the divider, 1944pt, no chevron; both narrower displays honored only the divider.
   - six of 450: the main display honored four spacers and the divider, 2144pt, with a chevron; both narrower displays honored only the divider.
   - Spacers that do not fit are dropped, which costs nothing.
+
+## Spacer search on hardware (2026-09-16)
+
+Skein Dev with the anchor, three displays. Divider caps found by the search: 280 on the 1080pt display, 588 on the 1800pt notched display, 1432 on the 3008pt main display. On the main display every probed divider length from 280 to 1432 reported items still visible, and 1496 dropped the divider.
+
+- **One spacer of 1136 (sized from the widest cap):** honored on the main display, but the hidden items stayed visible.
+- **Six spacers, search starting at 604 and only growing:** settled at 652. The divider lost its slot on the main and the 1800pt displays. Logged `collapse spacer search incomplete` and `collapse dropped`.
+- **Six spacers, two-directional search starting at 384:** settled at 432, because the 1800pt display kept honoring one spacer. Final state: five 448 slots on the main display, one on the 1800pt, none on the 1080pt, no divider slot anywhere, a chevron on all three displays, and the hidden icon still visible on the main display.
+- Hand measurements with unkeyed test items suggested 400 was safe, but Skein's spacers are keyed immediately right of the divider while test items land leftmost, so the two pack differently.
+- Both secondary displays hide correctly in every run: their captures show the « affordance and no hidden icons. The failure is specific to the main display, which has no notch.
+- The anchor stayed correct throughout: the hidden set and the layout order were unchanged across all runs, quits and relaunches.
