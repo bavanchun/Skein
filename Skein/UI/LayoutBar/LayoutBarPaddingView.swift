@@ -97,6 +97,20 @@ final class LayoutBarPaddingView: NSView {
 
         if let index = arrangedViews.firstIndex(of: draggingSource) {
             if arrangedViews.count == 1 {
+                if MenuBarPlatform.usesMenuBarAgent {
+                    let alert = NSAlert()
+                    alert.messageText = "Drop this item next to another item on macOS 27"
+                    alert.runModal()
+                    if let appState = container.appState {
+                        container.setArrangedViews(items: appState.itemManager.itemCache.managedItems(for: section.name))
+                        if let (oldContainer, _) = draggingSource.oldContainerInfo, oldContainer !== container {
+                            oldContainer.setArrangedViews(
+                                items: appState.itemManager.itemCache.managedItems(for: oldContainer.section.name)
+                            )
+                        }
+                    }
+                    return true
+                }
                 Task {
                     // dragging source is the only view in the layout bar, so we
                     // need to find a target item
@@ -144,6 +158,19 @@ final class LayoutBarPaddingView: NSView {
         guard let appState = container.appState else {
             return
         }
+        if MenuBarPlatform.usesMenuBarAgent {
+            let targetItem: MenuBarItem = switch destination {
+            case .leftOfItem(let target): target
+            case .rightOfItem(let target): target
+            }
+            if targetItem.info.namespace == .skein {
+                let alert = NSAlert()
+                alert.messageText = "Drop this item next to another item on macOS 27"
+                alert.runModal()
+                container.setArrangedViews(items: appState.itemManager.itemCache.managedItems(for: section.name))
+                return
+            }
+        }
         Task {
             try await Task.sleep(for: .milliseconds(25))
             do {
@@ -151,7 +178,16 @@ final class LayoutBarPaddingView: NSView {
                 appState.itemManager.removeTempShownItemFromCache(with: item.info)
             } catch {
                 Logger.layoutBar.error("Error moving menu bar item: \(error)")
-                let alert = NSAlert(error: error)
+                let alert: NSAlert
+                if
+                    let eventError = error as? MenuBarItemManager.EventError,
+                    eventError.code == .notMovable
+                {
+                    alert = NSAlert()
+                    alert.messageText = "This item can't be moved on its own on macOS 27"
+                } else {
+                    alert = NSAlert(error: error)
+                }
                 alert.runModal()
             }
         }
