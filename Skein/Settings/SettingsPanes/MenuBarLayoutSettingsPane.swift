@@ -7,17 +7,53 @@ import SwiftUI
 
 struct MenuBarLayoutSettingsPane: View {
     @EnvironmentObject var appState: AppState
+    @State private var tableAccess: LayoutTableFile.Access = .granted
+    @State private var isApplying = false
+
+    private var layoutBarsDisabled: Bool {
+        if MenuBarPlatform.usesMenuBarAgent {
+            switch tableAccess {
+            case .denied, .missing:
+                return true
+            case .granted, .failed:
+                return false
+            }
+        }
+        return false
+    }
 
     var body: some View {
-        if !ScreenCapture.cachedCheckPermissions() {
-            missingScreenRecordingPermission
-        } else if appState.menuBarManager.isMenuBarHiddenBySystemUserDefaults {
-            cannotArrange
-        } else {
-            SkeinForm(alignment: .leading, spacing: 20) {
-                header
-                layoutBars
+        Group {
+            if !ScreenCapture.cachedCheckPermissions() {
+                missingScreenRecordingPermission
+            } else if appState.menuBarManager.isMenuBarHiddenBySystemUserDefaults {
+                cannotArrange
+            } else {
+                SkeinForm(alignment: .leading, spacing: 20) {
+                    header
+                    if MenuBarPlatform.usesMenuBarAgent {
+                        tableAccessBanner
+                        repairBanner
+                    }
+                    layoutBars
+                        .disabled(layoutBarsDisabled)
+                    if
+                        MenuBarPlatform.usesMenuBarAgent,
+                        appState.itemManager.pendingLayout.hasChanges
+                    {
+                        pendingChangesBar
+                    }
+                }
             }
+        }
+        .onAppear {
+            refreshTableAccess()
+        }
+        .onDisappear {
+            handleDisappear()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            refreshTableAccess()
         }
     }
 
@@ -36,6 +72,81 @@ struct MenuBarLayoutSettingsPane: View {
                 } icon: {
                     Image(systemName: "lightbulb")
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tableAccessBanner: some View {
+        switch tableAccess {
+        case .denied:
+            SkeinGroupBox {
+                HStack {
+                    Label {
+                        Text("Rearranging menu bar items on macOS 27 needs Full Disk Access")
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.yellow)
+                    }
+                    Spacer()
+                    Button("Open Settings") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+            }
+        case .missing:
+            SkeinGroupBox {
+                Label {
+                    Text("Rearrange an item once with Command-drag, then reopen this pane.")
+                } icon: {
+                    Image(systemName: "info.circle.fill")
+                        .foregroundStyle(.blue)
+                }
+            }
+        case .granted, .failed:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var repairBanner: some View {
+        if
+            appState.itemManager.alwaysHiddenOrderNeedsRepair,
+            !appState.itemManager.pendingLayout.hasChanges
+        {
+            SkeinGroupBox {
+                HStack {
+                    Label {
+                        Text("The always-hidden divider is to the right of the hidden divider.")
+                    } icon: {
+                        Image(systemName: "arrow.left.arrow.right")
+                            .foregroundStyle(.orange)
+                    }
+                    Spacer()
+                    Button("Fix…") {
+                        fixAlwaysHiddenOrder()
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pendingChangesBar: some View {
+        SkeinGroupBox {
+            HStack {
+                Text("The menu bar reloads once to apply your changes")
+                    .font(.callout)
+                Spacer()
+                Button("Discard") {
+                    discardChanges()
+                }
+                Button("Apply") {
+                    applyChanges()
+                }
+                .keyboardShortcut(.defaultAction)
             }
         }
     }
@@ -100,6 +211,115 @@ struct MenuBarLayoutSettingsPane: View {
                         .padding(.leading, 2)
                 }
             }
+        }
+    }
+
+    private func refreshTableAccess() {
+        if MenuBarPlatform.usesMenuBarAgent {
+            tableAccess = LayoutTableFile.access()
+        }
+    }
+
+    private func fixAlwaysHiddenOrder() {
+        let alert = NSAlert()
+        alert.messageText = "Move the always-hidden divider? The menu bar reloads once."
+        alert.addButton(withTitle: "Move")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return
+        }
+
+        Task {
+            let hKey = "status:\(Constants.bundleIdentifier)::\(ControlItem.Identifier.hidden.rawValue)"
+            let ahKey = "status:\(Constants.bundleIdentifier)::\(ControlItem.Identifier.alwaysHidden.rawValue)"
+            let result = await LayoutTableWriter.apply([.leftOf(key: ahKey, target: hKey)])
+            if result != .applied {
+                let errorAlert = NSAlert()
+                errorAlert.messageText = "Could not move divider: \(result)"
+                errorAlert.runModal()
+            }
+        }
+    }
+
+    private func applyChanges() {
+        let alert = NSAlert()
+        alert.messageText = "Apply menu bar layout changes? The menu bar reloads once."
+        alert.addButton(withTitle: "Apply")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return
+        }
+
+        isApplying = true
+        Task {
+            defer {
+                isApplying = false
+            }
+            let result = await appState.itemManager.pendingLayout.apply()
+            if result != .applied {
+                let errorAlert = NSAlert()
+                switch result {
+                case .refused(let reason):
+                    errorAlert.messageText = reason
+                default:
+                    errorAlert.messageText = "Failed to apply changes: \(result)"
+                }
+                errorAlert.runModal()
+            }
+        }
+    }
+
+    private func discardChanges() {
+        appState.itemManager.pendingLayout.discard()
+        Task {
+            await appState.itemManager.cacheItemsFromAccessibility()
+        }
+    }
+
+    private func handleDisappear() {
+        guard
+            MenuBarPlatform.usesMenuBarAgent,
+            !isApplying,
+            appState.itemManager.pendingLayout.hasChanges
+        else {
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Apply your menu bar changes?"
+        alert.informativeText = "The menu bar reloads once to apply your changes."
+        alert.addButton(withTitle: "Apply")
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Keep Editing")
+
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn:
+            isApplying = true
+            Task {
+                defer {
+                    isApplying = false
+                }
+                let result = await appState.itemManager.pendingLayout.apply()
+                if result != .applied {
+                    let errorAlert = NSAlert()
+                    switch result {
+                    case .refused(let reason):
+                        errorAlert.messageText = reason
+                    default:
+                        errorAlert.messageText = "Failed to apply changes: \(result)"
+                    }
+                    errorAlert.runModal()
+                }
+            }
+        case .alertSecondButtonReturn:
+            discardChanges()
+        case .alertThirdButtonReturn:
+            appState.navigationState.settingsNavigationIdentifier = .menuBarLayout
+            appState.openSettingsWindow()
+            appState.activate(withPolicy: .regular)
+        default:
+            break
         }
     }
 }

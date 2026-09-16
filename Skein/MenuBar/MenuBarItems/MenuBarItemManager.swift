@@ -123,6 +123,12 @@ final class MenuBarItemManager: ObservableObject {
     /// The manager's menu bar item cache.
     @Published private(set) var itemCache = ItemCache()
 
+    /// Pending layout state on macOS 27.
+    private(set) lazy var pendingLayout = PendingLayout()
+
+    /// A Boolean value that indicates whether the always-hidden divider order needs repair on macOS 27.
+    @Published private(set) var alwaysHiddenOrderNeedsRepair = false
+
     /// Weak reference to the shared manager for diagnostics and getters.
     private(set) static weak var shared: MenuBarItemManager?
 
@@ -131,9 +137,6 @@ final class MenuBarItemManager: ObservableObject {
 
     /// Snapshot of menu bar items enumerated via Accessibility on macOS 27.
     private(set) var accessibilitySnapshot: [MenuBarItem] = []
-
-    /// A Boolean value that indicates whether the divider order warning has been logged.
-    private static var didLogAlwaysHiddenRightOfHidden = false
 
     /// Refreshes the accessibility snapshot off the main thread.
     func refreshAccessibilitySnapshot() async {
@@ -418,12 +421,14 @@ extension MenuBarItemManager {
 
         if
             let ahDistance,
-            let hDistance,
-            ahDistance < hDistance,
-            !Self.didLogAlwaysHiddenRightOfHidden
+            let hDistance
         {
-            Self.didLogAlwaysHiddenRightOfHidden = true
-            Logger.itemManager.warning("always-hidden divider right of hidden divider")
+            let needsRepair = ahDistance < hDistance
+            if alwaysHiddenOrderNeedsRepair != needsRepair {
+                alwaysHiddenOrderNeedsRepair = needsRepair
+            }
+        } else if alwaysHiddenOrderNeedsRepair {
+            alwaysHiddenOrderNeedsRepair = false
         }
 
         var newCache = ItemCache()
@@ -471,6 +476,10 @@ extension MenuBarItemManager {
             case .alwaysHidden:
                 newCache[.alwaysHidden].append(item)
             }
+        }
+
+        if pendingLayout.hasChanges {
+            newCache = pendingLayout.overlay(on: newCache)
         }
 
         if itemCache != newCache {
@@ -1255,6 +1264,11 @@ extension MenuBarItemManager {
     ///   - item: A menu bar item to move.
     ///   - destination: A destination to move the menu bar item.
     func move(item: MenuBarItem, to destination: MoveDestination) async throws {
+        if MenuBarPlatform.usesMenuBarAgent {
+            try recordMove(item, to: destination)
+            return
+        }
+
         if try itemHasCorrectPosition(item: item, for: destination) {
             Logger.itemManager.debug("\(item.logString) is already in the correct position")
             return
@@ -1324,6 +1338,11 @@ extension MenuBarItemManager {
     ///   - destination: A destination to move the menu bar item.
     ///   - timeout: Amount of time to wait before throwing an error.
     func slowMove(item: MenuBarItem, to destination: MoveDestination, timeout: Duration = .seconds(1)) async throws {
+        if MenuBarPlatform.usesMenuBarAgent {
+            try await move(item: item, to: destination)
+            return
+        }
+
         itemMoveCount += 1
         defer {
             itemMoveCount -= 1
@@ -1342,6 +1361,56 @@ extension MenuBarItemManager {
         } catch is TaskTimeoutError {
             throw EventError(code: .otherTimeout, item: item)
         }
+    }
+
+    /// Records a pending layout move for the given item on macOS 27.
+    ///
+    /// - Parameters:
+    ///   - item: The menu bar item to move.
+    ///   - destination: The destination relative to another item.
+    private func recordMove(_ item: MenuBarItem, to destination: MoveDestination) throws {
+        guard case .granted = LayoutTableFile.access() else {
+            throw EventError(code: .couldNotComplete, item: item)
+        }
+        guard
+            case .accessibility(let ax) = item.backing,
+            let itemKey = ax.tableKey,
+            !ax.isGroupedIdentity
+        else {
+            throw EventError(code: .notMovable, item: item)
+        }
+
+        let targetItem: MenuBarItem
+        let isLeft: Bool
+        switch destination {
+        case .leftOfItem(let target):
+            targetItem = target
+            isLeft = true
+        case .rightOfItem(let target):
+            targetItem = target
+            isLeft = false
+        }
+
+        guard targetItem.info.namespace != .skein else {
+            throw EventError(code: .notMovable, item: targetItem)
+        }
+
+        let targetKey: String
+        if
+            case .accessibility(let targetAx) = targetItem.backing,
+            let key = targetAx.tableKey,
+            !targetAx.isGroupedIdentity
+        {
+            targetKey = key
+        } else {
+            throw EventError(code: .notMovable, item: targetItem)
+        }
+
+        let move: MenuBarLayoutMath.Move = isLeft
+            ? .leftOf(key: itemKey, target: targetKey)
+            : .rightOf(key: itemKey, target: targetKey)
+        pendingLayout.record(move)
+        itemCache = pendingLayout.overlay(on: itemCache)
     }
 }
 
