@@ -26,6 +26,21 @@ final class CollapseController: ObservableObject {
     /// Process identifiers of on-bar slots left of the divider before collapse.
     private var hiddenPIDs = Set<pid_t>()
 
+    /// Process identifiers of visible third-party items keyed by display key.
+    private var visiblePIDs: [String: Set<pid_t>] = [:]
+
+    /// Leftmost hidden slot width recorded during snapshot.
+    private var hiddenSlotMin: CGFloat = 40
+
+    /// Observation taken before any collapse length changes.
+    private var preObservation: [String: MenuBarLayoutMath.DisplayObservation]?
+
+    /// Configuration keys where incomplete collapse has been logged.
+    private var loggedIncompleteKeys = Set<String>()
+
+    /// Whether spacers should be held at resting length.
+    private var isSpacersResting = false
+
     /// Keys of the hidden block remembered for the current collapse.
     private var rememberedBlockKeys: [String] = []
 
@@ -37,21 +52,6 @@ final class CollapseController: ObservableObject {
 
     /// Honored divider lengths keyed by screen configuration key, then by display frame key.
     private var caps: [String: [String: CGFloat]] = [:]
-
-    /// Honored spacer lengths keyed by screen configuration key.
-    private var spacerLengths: [String: CGFloat] = [:]
-
-    /// The spacer length currently being probed during an active spacer search.
-    private var probingSpacerLength: CGFloat?
-
-    /// The most recent screen configuration key observed.
-    private var lastConfigurationKey: String?
-
-    /// Honored fill spacer lengths keyed by screen configuration key.
-    private var fills: [String: [CGFloat]] = [:]
-
-    /// The fill spacer length currently being probed.
-    private var probeFill: CGFloat?
 
     /// Consecutive search failure counts keyed by screen configuration key.
     private var failures: [String: Int] = [:]
@@ -102,8 +102,7 @@ final class CollapseController: ObservableObject {
         }
         if let displayCaps = caps[key], !displayCaps.isEmpty {
             let capsList = Array(displayCaps.values)
-            let spacerLength = spacerLengths[key] ?? MenuBarLayoutMath.firstSpacerLength(caps: capsList)
-            var divider = MenuBarLayoutMath.spacerPlan(caps: capsList, spacerLength: spacerLength).divider
+            var divider = MenuBarLayoutMath.ladderPlan(caps: capsList, hiddenSlotMin: hiddenSlotMin).divider
             if
                 let userOverride,
                 userOverride > 0
@@ -117,19 +116,14 @@ final class CollapseController: ObservableObject {
 
     /// Returns the spacer lengths for the given display widths.
     func spacerLengths(for widths: [CGFloat]) -> [CGFloat] {
+        guard !isSpacersResting else {
+            return []
+        }
         let key = configurationKey(for: widths)
         if let displayCaps = caps[key], !displayCaps.isEmpty {
             let capsList = Array(displayCaps.values)
-            let spacerLength: CGFloat
-            if isSearching, let probingSpacerLength {
-                spacerLength = probingSpacerLength
-            } else {
-                spacerLength = spacerLengths[key] ?? MenuBarLayoutMath.firstSpacerLength(caps: capsList)
-            }
-            let plan = MenuBarLayoutMath.spacerPlan(caps: capsList, spacerLength: spacerLength)
-            let currentFills = (fills[key] ?? []) + (probeFill.map { [$0] } ?? [])
-            let combined = plan.spacers + currentFills
-            return Array(combined.prefix(MenuBarLayoutMath.maximumSpacersPerDivider))
+            let plan = MenuBarLayoutMath.ladderPlan(caps: capsList, hiddenSlotMin: hiddenSlotMin)
+            return plan.spacers
         }
         return []
     }
@@ -192,6 +186,7 @@ final class CollapseController: ObservableObject {
         let ownIDs = ownIdentifiers()
         let ownWidths = ownSlotWidths(dividers: dividers)
         let dividerSlotWidth = (probingLength ?? divider.length) + MenuBarLayoutMath.slotPadding
+        let ownPID = NSRunningApplication.current.processIdentifier
 
         var states: [String: MenuBarLayoutMath.DisplayState] = [:]
         for (displayKey, observation) in observations {
@@ -200,7 +195,8 @@ final class CollapseController: ObservableObject {
                 dividerIdentifier: divider.autosaveName,
                 dividerSlotWidth: dividerSlotWidth,
                 ownIdentifiers: ownIDs,
-                ownSlotWidths: ownWidths
+                ownSlotWidths: ownWidths,
+                ownPID: ownPID
             )
         }
         return states
@@ -218,6 +214,7 @@ final class CollapseController: ObservableObject {
         let ownIDs = ownIdentifiers()
         let ownWidths = ownSlotWidths(dividers: dividers)
         let dividerSlotWidth = (probingLength ?? divider.length) + MenuBarLayoutMath.slotPadding
+        let ownPID = NSRunningApplication.current.processIdentifier
 
         var totalLeaked = Set<pid_t>()
         for (_, observation) in observations {
@@ -227,7 +224,8 @@ final class CollapseController: ObservableObject {
                 dividerSlotWidth: dividerSlotWidth,
                 ownIdentifiers: ownIDs,
                 ownSlotWidths: ownWidths,
-                hiddenPIDs: hiddenPIDs
+                hiddenPIDs: hiddenPIDs,
+                ownPID: ownPID
             )
             totalLeaked.formUnion(leaked)
         }
@@ -295,6 +293,8 @@ final class CollapseController: ObservableObject {
         guard MenuBarPlatform.usesMenuBarAgent else {
             return true
         }
+        isSpacersResting = false
+        preObservation = MenuBarAgentWindows.observe()
         hasPreparedSnapshot = snapshotHiddenBlock(dividers: dividers, requireCollapsed: false)
         return hasPreparedSnapshot
     }
@@ -344,63 +344,119 @@ final class CollapseController: ObservableObject {
             else {
                 continue
             }
+            if key.contains("Spacer") {
+                continue
+            }
             blockKeys.append(key)
         }
 
-        blockKeys.sort { (table[$0] ?? 0) > (table[$1] ?? 0) }
+        blockKeys.sort { (table[$0] ?? 0) < (table[$1] ?? 0) }
         Defaults.set(blockKeys, forKey: .collapseHiddenBlock)
         rememberedBlockKeys = blockKeys
 
-        if let observations = MenuBarAgentWindows.observe() {
+        if let observations = preObservation ?? MenuBarAgentWindows.observe() {
             let currentPID = NSRunningApplication.current.processIdentifier
             var pids = Set<pid_t>()
-            for (_, observation) in observations {
+            var visibleMap: [String: Set<pid_t>] = [:]
+            var minHiddenWidth: CGFloat?
+
+            for (dKey, observation) in observations {
                 guard let dividerSlot = observation.slots.first(where: {
                     $0.identifier == activeDivider.autosaveName
+                        || abs($0.frame.width - (activeDivider.length + MenuBarLayoutMath.slotPadding)) <= 1
                 }) else {
                     continue
                 }
+
+                var visPIDs = Set<pid_t>()
+                var leftmostHiddenSlot: MenuBarLayoutMath.Slot?
+
                 for slot in observation.slots {
                     guard
                         !slot.isChevron,
-                        slot.frame.minX < dividerSlot.frame.minX,
-                        let pid = slot.pid,
-                        pid != currentPID
+                        slot.frame.width > 0
                     else {
                         continue
                     }
-                    pids.insert(pid)
+                    if let pid = slot.pid, pid == currentPID {
+                        continue
+                    }
+
+                    if slot.frame.minX > dividerSlot.frame.minX {
+                        if let pid = slot.pid {
+                            visPIDs.insert(pid)
+                        }
+                    } else if slot.frame.minX < dividerSlot.frame.minX {
+                        if let pid = slot.pid {
+                            pids.insert(pid)
+                        }
+                        if let currentLeft = leftmostHiddenSlot {
+                            if slot.frame.minX < currentLeft.frame.minX {
+                                leftmostHiddenSlot = slot
+                            }
+                        } else {
+                            leftmostHiddenSlot = slot
+                        }
+                    }
+                }
+
+                visibleMap[dKey] = visPIDs
+                if let leftmost = leftmostHiddenSlot {
+                    let w = leftmost.frame.width
+                    if let cur = minHiddenWidth {
+                        minHiddenWidth = min(cur, w)
+                    } else {
+                        minHiddenWidth = w
+                    }
                 }
             }
+
             hiddenPIDs = pids
+            visiblePIDs = visibleMap
+            if let w = minHiddenWidth {
+                hiddenSlotMin = w
+            }
         }
 
         collapseAnchorUnavailableReason = nil
         return true
     }
 
-    /// Anchors the hidden block keys with values starting at 8192.
+    /// Anchors the hidden block and spacers above the collapsing divider.
     @discardableResult
     private func anchorBlock() -> Bool {
         let blockKeys = rememberedBlockKeys.isEmpty
             ? (Defaults.stringArray(forKey: .collapseHiddenBlock) ?? (Defaults.array(forKey: .collapseHiddenBlock) as? [String]) ?? [])
             : rememberedBlockKeys
 
-        guard !blockKeys.isEmpty else {
-            return true
+        guard case .granted = LayoutTableFile.access() else {
+            handleAnchorUnavailable(reason: "denied")
+            return false
+        }
+        guard let table = LayoutTableFile.readFromDisk() else {
+            handleAnchorUnavailable(reason: "unreadable")
+            return false
         }
 
-        let result = LayoutTableWriter.apply { table in
-            var next = table
-            let count = blockKeys.count
-            for (index, key) in blockKeys.enumerated() {
-                guard let currentDist = next[key] else {
-                    continue
-                }
-                if currentDist < 8192.0 {
-                    let rank = count - 1 - index
-                    next[key] = 8192.0 + Double(rank) * 8.0
-                }
+        let dividerName = ControlItem.Identifier.hidden.rawValue
+        guard let dividerKey = table.keys.first(where: {
+            $0.hasPrefix("status:") && $0.hasSuffix("::\(dividerName)")
+        }), let dividerDistance = table[dividerKey] else {
+            handleAnchorUnavailable(reason: "unreadable")
+            return false
+        }
+
+        let base = max(8192.0, floor(dividerDistance) + 8.0)
+        let prefix = String(dividerKey.dropLast(dividerName.count))
+
+        let result = LayoutTableWriter.apply { current in
+            var next = current
+            for i in 0..<MenuBarLayoutMath.maximumSpacersPerDivider {
+                let spacerKey = "\(prefix)\(dividerName)Spacer\(i)"
+                next[spacerKey] = base + Double(8 * i)
+            }
+            for (r, key) in blockKeys.enumerated() {
+                next[key] = base + 48.0 + Double(8 * r)
             }
             return next
         }
@@ -431,9 +487,10 @@ final class CollapseController: ObservableObject {
             return
         }
 
+        let dividerName = ControlItem.Identifier.hidden.rawValue
         guard
             let dividerKey = table.keys.first(where: {
-                $0.hasPrefix("status:") && $0.hasSuffix("::\(ControlItem.Identifier.hidden.rawValue)")
+                $0.hasPrefix("status:") && $0.hasSuffix("::\(dividerName)")
             }),
             let dividerDist = table[dividerKey]
         else {
@@ -445,12 +502,17 @@ final class CollapseController: ObservableObject {
             return
         }
 
+        let base = max(8192.0, floor(dividerDist) + 8.0)
+        let prefix = String(dividerKey.dropLast(dividerName.count))
+
         let result = LayoutTableWriter.apply { current in
             var next = current
-            let count = remembered.count
-            for (index, key) in remembered.enumerated() {
-                let rank = count - 1 - index
-                next[key] = 8192.0 + Double(rank) * 8.0
+            for i in 0..<MenuBarLayoutMath.maximumSpacersPerDivider {
+                let spacerKey = "\(prefix)\(dividerName)Spacer\(i)"
+                next[spacerKey] = base + Double(8 * i)
+            }
+            for (r, key) in remembered.enumerated() {
+                next[key] = base + 48.0 + Double(8 * r)
             }
             return next
         }
@@ -460,124 +522,150 @@ final class CollapseController: ObservableObject {
         }
     }
 
-    /// Determines whether a slot represents an honored spacer on a display.
-    private func isHonoredSpacer(
-        _ slot: MenuBarLayoutMath.Slot,
-        candidate: CGFloat,
-        dividerAutosaveName: String
-    ) -> Bool {
-        guard !slot.isChevron, slot.frame.width > 0 else {
-            return false
-        }
-        let expectedWidth = candidate + MenuBarLayoutMath.slotPadding
-        guard abs(slot.frame.width - expectedWidth) <= 1 else {
-            return false
-        }
-        if let id = slot.identifier {
-            return id.hasPrefix(dividerAutosaveName) && id.contains("Spacer")
-        }
-        if let pid = slot.pid {
-            return pid == NSRunningApplication.current.processIdentifier
-        }
-        return true
+    /// Structure representing the per-display collapse verdict.
+    private struct DisplayVerdict {
+        var dividerLost: Bool
+        var visiblePushed: Bool
+        var hiddenOnBar: Int
+        var remainder: CGFloat
+        var spacersOnBar: Int
     }
 
-    /// Searches for the honored spacer length on wide displays.
-    private func searchSpacers(
-        dividers: [ControlItem],
-        key: String,
-        displayCaps: [CGFloat]
-    ) async -> Bool {
-        guard displayCaps.count > 1 else {
-            spacerLengths[key] = MenuBarLayoutMath.firstSpacerLength(caps: displayCaps)
-            return true
+    /// Takes two observations 200ms apart that must agree, retrying once on mismatch.
+    private func observePost() async -> [String: MenuBarLayoutMath.DisplayObservation]? {
+        var obs1 = MenuBarAgentWindows.observe()
+        try? await Task.sleep(for: .milliseconds(200))
+        var obs2 = MenuBarAgentWindows.observe()
+
+        if obs1 != obs2 || obs2 == nil {
+            try? await Task.sleep(for: .milliseconds(200))
+            obs1 = MenuBarAgentWindows.observe()
+            try? await Task.sleep(for: .milliseconds(200))
+            obs2 = MenuBarAgentWindows.observe()
+            if obs1 != obs2 || obs2 == nil {
+                Logger.collapse.notice("collapse verdict unknown")
+                return nil
+            }
         }
-        guard let activeDivider = dividers.first(where: {
-            $0.identifier == .hidden && $0.isAddedToMenuBar && $0.isVisible && $0.state == .hideItems
-        }) ?? dividers.first(where: {
-            $0.identifier == .alwaysHidden && $0.isAddedToMenuBar && $0.isVisible && $0.state == .hideItems
-        }) ?? dividers.first else {
-            return false
+        return obs2
+    }
+
+    /// Evaluates display observations against pre-collapse state.
+    private func judge(
+        post: [String: MenuBarLayoutMath.DisplayObservation],
+        pre: [String: MenuBarLayoutMath.DisplayObservation],
+        activeDivider: ControlItem,
+        ladderPlan: (divider: CGFloat, spacers: [CGFloat])
+    ) -> [String: DisplayVerdict] {
+        let ownIDs = ownIdentifiers()
+        let ownWidths = ownSlotWidths(dividers: [activeDivider])
+        let ownPID = NSRunningApplication.current.processIdentifier
+        let dividerSlotWidth = activeDivider.length + MenuBarLayoutMath.slotPadding
+        let spacerSlotWidths = Set(ladderPlan.spacers.map { $0 + MenuBarLayoutMath.slotPadding })
+
+        func isOurs(_ slot: MenuBarLayoutMath.Slot) -> Bool {
+            if let pid = slot.pid {
+                return pid == ownPID
+            }
+            if let id = slot.identifier {
+                return ownIDs.contains(id)
+            }
+            return ownWidths.contains { abs(slot.frame.width - $0) <= 1 }
         }
 
-        var candidate = MenuBarLayoutMath.firstSpacerLength(caps: displayCaps)
-        var accepted = false
-
-        for attempt in 1...4 {
-            guard dividers.allSatisfy(isCollapsed) else {
-                return false
+        func isDividerSlot(_ slot: MenuBarLayoutMath.Slot) -> Bool {
+            if let id = slot.identifier {
+                return id == activeDivider.autosaveName
             }
+            return abs(slot.frame.width - dividerSlotWidth) <= 1
+        }
 
-            probingSpacerLength = candidate
-            for divider in dividers {
-                divider.reapplyCollapseLength()
-            }
-            try? await Task.sleep(for: Self.settleDelay)
+        var verdicts: [String: DisplayVerdict] = [:]
 
-            guard
-                dividers.allSatisfy(isCollapsed),
-                let states = await observeStates(dividers: dividers),
-                let observations = MenuBarAgentWindows.observe()
-            else {
-                return false
-            }
+        for (dKey, postDisplay) in post {
+            let preDisplay = pre[dKey]
+            let postSlots = postDisplay.slots
+            let bar = postDisplay.bar
 
-            let dividerPresentOnAll = !states.isEmpty && !states.values.contains(.dividerDropped)
+            let hadDividerInPre = preDisplay?.slots.contains(where: isDividerSlot) ?? false
+            let hasDividerInPost = postSlots.contains(where: isDividerSlot)
+            let dividerLost = hadDividerInPre && !hasDividerInPost
 
-            let maxWidth = observations.keys.map { dKey in
-                dKey.split(separator: ",").last.flatMap { Double($0) } ?? 0
-            }.max() ?? 0
-
-            var narrowerHonorsSpacer = false
-            for (dKey, observation) in observations {
-                let width = dKey.split(separator: ",").last.flatMap { Double($0) } ?? 0
-                let isWidest = width >= maxWidth - 1
-                if !isWidest {
-                    let spacerCount = observation.slots.filter {
-                        isHonoredSpacer($0, candidate: candidate, dividerAutosaveName: activeDivider.autosaveName)
-                    }.count
-                    if spacerCount > 0 {
-                        narrowerHonorsSpacer = true
-                        break
-                    }
+            let visPIDsForDisplay = visiblePIDs[dKey] ?? []
+            var visiblePushed = false
+            for pid in visPIDsForDisplay {
+                let hasUnoverflowedInPost = postSlots.contains { slot in
+                    slot.pid == pid && !MenuBarLayoutMath.isOverflowed(slot, among: postSlots, bar: bar)
+                }
+                if !hasUnoverflowedInPost {
+                    visiblePushed = true
+                    break
                 }
             }
 
-            if dividerPresentOnAll && !narrowerHonorsSpacer {
-                accepted = true
-                spacerLengths[key] = candidate
-                break
+            let oursUnoverflowed = postSlots.filter {
+                isOurs($0) && !MenuBarLayoutMath.isOverflowed($0, among: postSlots, bar: bar)
             }
+            let leftmostOwnMinX = oursUnoverflowed.map(\.frame.minX).min() ?? CGFloat.infinity
 
-            // A narrower display that honors a spacer needs a longer one; a divider
-            // that lost its slot means the spacers are eating the space it needs,
-            // which a shorter one leaves free.
-            if attempt < 4 {
-                if narrowerHonorsSpacer {
-                    candidate += MenuBarLayoutMath.searchResolution
+            var hiddenCount = 0
+            var rightmostHiddenMaxX: CGFloat = 0
+            for slot in postSlots {
+                guard !MenuBarLayoutMath.isOverflowed(slot, among: postSlots, bar: bar) else {
+                    continue
+                }
+                let isHidden: Bool
+                if let pid = slot.pid {
+                    isHidden = hiddenPIDs.contains(pid)
                 } else {
-                    candidate = max(
-                        candidate - MenuBarLayoutMath.searchResolution,
-                        MenuBarLayoutMath.minimumUnit
-                    )
+                    isHidden = !isOurs(slot) && slot.frame.minX < leftmostOwnMinX
+                }
+                if isHidden {
+                    hiddenCount += 1
+                    rightmostHiddenMaxX = max(rightmostHiddenMaxX, slot.frame.maxX)
                 }
             }
+
+            var onBarSpacers = 0
+            var leftmostSpacerMinX: CGFloat = CGFloat.infinity
+            for slot in postSlots {
+                guard !MenuBarLayoutMath.isOverflowed(slot, among: postSlots, bar: bar) else {
+                    continue
+                }
+                let isSpacer: Bool
+                if let id = slot.identifier {
+                    isSpacer = id.contains("Spacer")
+                } else if slot.pid == ownPID {
+                    isSpacer = spacerSlotWidths.contains { abs(slot.frame.width - $0) <= 1 }
+                } else {
+                    isSpacer = false
+                }
+                if isSpacer {
+                    onBarSpacers += 1
+                    leftmostSpacerMinX = min(leftmostSpacerMinX, slot.frame.minX)
+                }
+            }
+
+            let remainder: CGFloat
+            if hiddenCount > 0, leftmostSpacerMinX < CGFloat.infinity, rightmostHiddenMaxX > 0 {
+                remainder = max(0, leftmostSpacerMinX - rightmostHiddenMaxX)
+            } else {
+                remainder = 0
+            }
+
+            verdicts[dKey] = DisplayVerdict(
+                dividerLost: dividerLost,
+                visiblePushed: visiblePushed,
+                hiddenOnBar: hiddenCount,
+                remainder: remainder,
+                spacersOnBar: onBarSpacers
+            )
         }
 
-        probingSpacerLength = nil
-        for divider in dividers {
-            divider.reapplyCollapseLength()
-        }
-
-        if !accepted {
-            spacerLengths[key] = candidate
-            Logger.collapse.notice("collapse spacer search incomplete")
-        }
-
-        return true
+        return verdicts
     }
 
-    /// Searches for the honored divider lengths per display.
+    /// Searches for the honored divider lengths per display and applies the ladder.
     private func search(
         dividers: [ControlItem],
         initialHigh: [String: CGFloat] = [:]
@@ -596,17 +684,11 @@ final class CollapseController: ObservableObject {
         defer {
             isSearching = false
             probingLength = nil
-            probingSpacerLength = nil
-            probeFill = nil
         }
 
         let widths = NSScreen.screens.map(\.frame.width)
         let key = configurationKey(for: widths)
         let previousCaps = caps[key]
-        let previousSpacerLength = spacerLengths[key]
-        let previousFills = fills[key]
-        fills[key] = nil
-        spacerLengths[key] = nil
         let userOverride = (Defaults.object(forKey: .collapseUnitOverride) as? NSNumber).map {
             CGFloat(truncating: $0)
         }
@@ -639,13 +721,8 @@ final class CollapseController: ObservableObject {
 
             if probeCount == 1 {
                 guard anchorBlock() else {
-                    // The anchor is what keeps the user's order intact, so a refused
-                    // write stops the search with the previous lengths restored.
                     caps[key] = previousCaps
-                    spacerLengths[key] = previousSpacerLength
-                    fills[key] = previousFills
                     probingLength = nil
-                    probingSpacerLength = nil
                     for divider in dividers {
                         divider.reapplyCollapseLength()
                     }
@@ -725,10 +802,7 @@ final class CollapseController: ObservableObject {
 
         if isInterrupted {
             caps[key] = previousCaps
-            spacerLengths[key] = previousSpacerLength
-            fills[key] = previousFills
             probingLength = nil
-            probingSpacerLength = nil
             for divider in dividers {
                 divider.reapplyCollapseLength()
             }
@@ -749,187 +823,98 @@ final class CollapseController: ObservableObject {
         }
 
         probingLength = nil
+        isSpacersResting = false
         let displayCaps = caps[key].map { Array($0.values) } ?? []
-        let spacerSearchCompleted = await searchSpacers(
-            dividers: dividers,
-            key: key,
-            displayCaps: displayCaps
-        )
-        guard spacerSearchCompleted else {
-            caps[key] = previousCaps
-            spacerLengths[key] = previousSpacerLength
-            fills[key] = previousFills
-            probingLength = nil
-            probingSpacerLength = nil
-            for divider in dividers {
-                divider.reapplyCollapseLength()
-            }
-            Logger.collapse.debug("collapse search interrupted screens=\(key)")
-            return
-        }
+        let tMin = min(max(hiddenSlotMin, 32), 48)
+        let plan = MenuBarLayoutMath.ladderPlan(caps: displayCaps, hiddenSlotMin: hiddenSlotMin)
 
         for divider in dividers {
             divider.reapplyCollapseLength()
         }
 
-        try? await Task.sleep(for: Self.settleDelay)
-
-        let postSearchStates = await observeStates(dividers: dividers)
-        let postSearchSummary = postSearchStates.flatMap { MenuBarLayoutMath.summary(Array($0.values)) }
-
         anchorBlock()
 
-        let spacerLength = spacerLengths[key] ?? MenuBarLayoutMath.firstSpacerLength(caps: displayCaps)
-        let plan = MenuBarLayoutMath.spacerPlan(caps: displayCaps, spacerLength: spacerLength)
-        let spacerString = plan.spacers.map { "\(Int($0))" }.joined(separator: "+")
+        try? await Task.sleep(for: Self.settleDelay)
 
-        let hasAnyVisible = postSearchStates?.values.contains(.itemsVisible) ?? false
+        guard let pre = preObservation else {
+            return
+        }
 
-        if postSearchSummary == .collapsed && !hasAnyVisible {
+        guard let post = await observePost() else {
+            return
+        }
+
+        let verdicts = judge(
+            post: post,
+            pre: pre,
+            activeDivider: activeDivider,
+            ladderPlan: plan
+        )
+
+        let isSafe = !verdicts.values.contains { $0.dividerLost || $0.visiblePushed }
+        let isComplete = isSafe && verdicts.values.allSatisfy { $0.hiddenOnBar == 0 }
+
+        if isComplete {
             failures[key] = 0
             backoff[key] = 20
             nextAllowedSearch.removeValue(forKey: key)
-
-            if hiddenPIDs.isEmpty {
-                Logger.collapse.notice(
-                    "collapse nothing to hide screens=\(key) divider=\(Int(plan.divider)) spacers=\(spacerString)"
-                )
-            } else {
-                Logger.collapse.notice(
-                    "collapse honored screens=\(key) divider=\(Int(plan.divider)) spacers=\(spacerString)"
-                )
+            let totalSpacersOnBar = verdicts.values.map(\.spacersOnBar).reduce(0, +)
+            Logger.collapse.notice(
+                "collapse honored screens=\(key) divider=\(Int(plan.divider)) ladder=\(Int(tMin)) spacersOnBar=\(totalSpacersOnBar)"
+            )
+        } else if isSafe {
+            if !loggedIncompleteKeys.contains(key) {
+                loggedIncompleteKeys.insert(key)
+                for (dKey, verdict) in verdicts where verdict.hiddenOnBar > 0 {
+                    let displayWidth = dKey.split(separator: ",").last.flatMap { Int($0) } ?? 0
+                    Logger.collapse.notice(
+                        "collapse incomplete screens=\(key) display=\(displayWidth) hiddenOnBar=\(verdict.hiddenOnBar) remainder=\(Int(verdict.remainder))"
+                    )
+                }
             }
-        } else if postSearchSummary == .dividerDropped {
-            failures[key, default: 0] += 1
-            let currentBackoff = backoff[key] ?? 20
-            let nextBackoff = min(currentBackoff * 2, 300)
-            backoff[key] = nextBackoff
-            nextAllowedSearch[key] = Date().addingTimeInterval(nextBackoff)
-
-            Logger.collapse.notice("collapse dropped screens=\(key)")
         } else {
-            await fill(dividers: dividers, key: key)
+            isSpacersResting = true
+            for divider in dividers {
+                divider.reapplyCollapseLength()
+            }
+            try? await Task.sleep(for: Self.settleDelay)
+            if let secondPost = await observePost() {
+                let secondVerdicts = judge(
+                    post: secondPost,
+                    pre: pre,
+                    activeDivider: activeDivider,
+                    ladderPlan: (plan.divider, [])
+                )
+                let secondSafe = !secondVerdicts.values.contains { $0.dividerLost || $0.visiblePushed }
+                if secondSafe {
+                    anchorBlock()
+                } else {
+                    var failedReason = "dividerLost"
+                    var failedDisplayWidth = 0
+                    for (dKey, v) in secondVerdicts {
+                        let w = dKey.split(separator: ",").last.flatMap { Int($0) } ?? 0
+                        if v.dividerLost {
+                            failedReason = "dividerLost"
+                            failedDisplayWidth = w
+                            break
+                        } else if v.visiblePushed {
+                            failedReason = "visiblePushed"
+                            failedDisplayWidth = w
+                            break
+                        }
+                    }
+                    Logger.collapse.notice("collapse refused reason=\(failedReason) display=\(failedDisplayWidth)")
+                    onRefusal?()
+                }
+            } else {
+                Logger.collapse.notice("collapse refused reason=unknown display=0")
+                onRefusal?()
+            }
         }
 
         if pendingCheck {
             pendingCheck = false
             await check(dividers)
-        }
-    }
-
-    /// Probes and adds fill spacers for wide displays where items remain visible.
-    private func fill(dividers: [ControlItem], key: String) async {
-        let displayCaps = caps[key].map { Array($0.values) } ?? []
-        let spacerLength = spacerLengths[key] ?? MenuBarLayoutMath.firstSpacerLength(caps: displayCaps)
-        let plan = MenuBarLayoutMath.spacerPlan(caps: displayCaps, spacerLength: spacerLength)
-        guard let bounds = MenuBarLayoutMath.fillBounds(caps: displayCaps, plan: plan) else {
-            let finalStates = await observeStates(dividers: dividers)
-            if let finalStates {
-                for (dKey, st) in finalStates where st == .itemsVisible {
-                    let displayWidth = dKey.split(separator: ",").last.flatMap { Int($0) } ?? 0
-                    Logger.collapse.notice("collapse incomplete screens=\(key) display=\(displayWidth)")
-                }
-            }
-            return
-        }
-
-        var candidate = bounds.upper
-        var probeCount = 0
-        let previousFills = fills[key]
-
-        while
-            (plan.spacers.count + (fills[key]?.count ?? 0)) < MenuBarLayoutMath.maximumSpacersPerDivider,
-            probeCount < 12
-        {
-            probeCount += 1
-            probeFill = candidate
-            for divider in dividers {
-                divider.reapplyCollapseLength()
-            }
-            try? await Task.sleep(for: Self.settleDelay)
-
-            guard
-                dividers.allSatisfy(isCollapsed),
-                let states = await observeStates(dividers: dividers)
-            else {
-                fills[key] = previousFills
-                probeFill = nil
-                for divider in dividers {
-                    divider.reapplyCollapseLength()
-                }
-                Logger.collapse.debug("collapse fill interrupted screens=\(key)")
-                return
-            }
-
-            for (dKey, state) in states {
-                let displayWidth = dKey.split(separator: ",").last.flatMap { Int($0) } ?? 0
-                Logger.collapse.debug(
-                    "probe length=\(Int(candidate)) display=\(displayWidth) state=\(state.rawValue) attempts=1"
-                )
-            }
-
-            let hasDropped = states.values.contains(.dividerDropped)
-            if hasDropped {
-                let mid = (candidate + bounds.lower) / 2
-                let next = (mid / MenuBarLayoutMath.searchResolution).rounded(.down) * MenuBarLayoutMath.searchResolution
-                if next < bounds.lower {
-                    break
-                }
-                candidate = next
-            } else {
-                fills[key, default: []].append(candidate)
-                let stillVisible = states.values.contains(.itemsVisible)
-                if !stillVisible {
-                    break
-                }
-            }
-        }
-
-        probeFill = nil
-        for divider in dividers {
-            divider.reapplyCollapseLength()
-        }
-        try? await Task.sleep(for: Self.settleDelay)
-
-        let finalStates = await observeStates(dividers: dividers)
-        let summaryState = finalStates.flatMap { MenuBarLayoutMath.summary(Array($0.values)) }
-
-        anchorBlock()
-
-        let allSpacers = plan.spacers + (fills[key] ?? [])
-        let spacerString = allSpacers.map { "\(Int($0))" }.joined(separator: "+")
-
-        let hasAnyVisible = finalStates?.values.contains(.itemsVisible) ?? false
-
-        if summaryState == .collapsed && !hasAnyVisible {
-            failures[key] = 0
-            backoff[key] = 20
-            nextAllowedSearch.removeValue(forKey: key)
-
-            if hiddenPIDs.isEmpty {
-                Logger.collapse.notice(
-                    "collapse nothing to hide screens=\(key) divider=\(Int(plan.divider)) spacers=\(spacerString)"
-                )
-            } else {
-                Logger.collapse.notice(
-                    "collapse honored screens=\(key) divider=\(Int(plan.divider)) spacers=\(spacerString)"
-                )
-            }
-        } else if summaryState == .dividerDropped {
-            failures[key, default: 0] += 1
-            let currentBackoff = backoff[key] ?? 20
-            let nextBackoff = min(currentBackoff * 2, 300)
-            backoff[key] = nextBackoff
-            nextAllowedSearch[key] = Date().addingTimeInterval(nextBackoff)
-
-            Logger.collapse.notice("collapse dropped screens=\(key)")
-        } else if summaryState == .itemsVisible || hasAnyVisible {
-            if let finalStates {
-                for (dKey, st) in finalStates where st == .itemsVisible {
-                    let displayWidth = dKey.split(separator: ",").last.flatMap { Int($0) } ?? 0
-                    Logger.collapse.notice("collapse incomplete screens=\(key) display=\(displayWidth)")
-                }
-            }
         }
     }
 
@@ -949,6 +934,8 @@ final class CollapseController: ObservableObject {
         if hasPreparedSnapshot {
             hasPreparedSnapshot = false
         } else {
+            isSpacersResting = false
+            preObservation = MenuBarAgentWindows.observe()
             guard snapshotHiddenBlock(dividers: collapsedDividers) else {
                 return
             }
@@ -961,10 +948,6 @@ final class CollapseController: ObservableObject {
 
         let widths = NSScreen.screens.map(\.frame.width)
         let key = configurationKey(for: widths)
-        if let last = lastConfigurationKey, last != key {
-            spacerLengths.removeValue(forKey: last)
-        }
-        lastConfigurationKey = key
         if let displayCaps = caps[key], !displayCaps.isEmpty {
             for divider in collapsedDividers {
                 divider.reapplyCollapseLength()

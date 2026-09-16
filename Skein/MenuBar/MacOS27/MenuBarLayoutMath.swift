@@ -98,11 +98,15 @@ enum MenuBarLayoutMath {
         dividerIdentifier: String,
         dividerSlotWidth: CGFloat,
         ownIdentifiers: Set<String>,
-        ownSlotWidths: Set<CGFloat>
+        ownSlotWidths: Set<CGFloat>,
+        ownPID: pid_t? = nil
     ) -> DisplayState {
         let sortedSlots = observation.slots.sorted { $0.frame.minX < $1.frame.minX }
 
         func isOurs(_ slot: Slot) -> Bool {
+            if let pid = slot.pid, let ownPID {
+                return pid == ownPID
+            }
             if let id = slot.identifier {
                 return ownIdentifiers.contains(id)
             }
@@ -153,7 +157,8 @@ enum MenuBarLayoutMath {
         dividerSlotWidth: CGFloat,
         ownIdentifiers: Set<String>,
         ownSlotWidths: Set<CGFloat>,
-        hiddenPIDs: Set<pid_t>
+        hiddenPIDs: Set<pid_t>,
+        ownPID: pid_t? = nil
     ) -> Set<pid_t> {
         guard !hiddenPIDs.isEmpty else {
             return []
@@ -161,6 +166,9 @@ enum MenuBarLayoutMath {
         let sortedSlots = observation.slots.sorted { $0.frame.minX < $1.frame.minX }
 
         func isOurs(_ slot: Slot) -> Bool {
+            if let pid = slot.pid, let ownPID {
+                return pid == ownPID
+            }
             if let id = slot.identifier {
                 return ownIdentifiers.contains(id)
             }
@@ -204,10 +212,10 @@ enum MenuBarLayoutMath {
         return .collapsed
     }
 
-    /// Computes the divider and spacer lengths for display caps.
-    static func spacerPlan(
+    /// Computes the divider and descending binary ladder spacer lengths for display caps.
+    static func ladderPlan(
         caps: [CGFloat],
-        spacerLength: CGFloat,
+        hiddenSlotMin: CGFloat,
         margin: CGFloat = 16
     ) -> (divider: CGFloat, spacers: [CGFloat]) {
         guard !caps.isEmpty else {
@@ -230,80 +238,28 @@ enum MenuBarLayoutMath {
 
         let divider = min(max(smallest - margin, minimumUnit), maximumUnit)
 
-        guard
-            dedupedCaps.count > 1,
-            spacerLength > 0
-        else {
+        guard dedupedCaps.count >= 2 else {
             return (divider, [])
         }
 
-        let spacers = Array(repeating: spacerLength, count: maximumSpacersPerDivider)
+        guard let widestCap = dedupedCaps.last else {
+            return (divider, [])
+        }
+
+        let tMin = min(max(hiddenSlotMin, 32), 48)
+        let limit = widestCap + slotPadding + tMin
+
+        var spacers: [CGFloat] = []
+        for k in (0...5).reversed() {
+            let slot = tMin * CGFloat(1 << k)
+            guard slot <= limit else {
+                continue
+            }
+            let length = slot - slotPadding
+            spacers.append(length)
+        }
+
         return (divider, spacers)
-    }
-
-    /// Computes the initial spacer length to probe for display caps.
-    static func firstSpacerLength(
-        caps: [CGFloat],
-        margin: CGFloat = 16
-    ) -> CGFloat {
-        let sortedCaps = caps.sorted()
-        var dedupedCaps: [CGFloat] = []
-        for cap in sortedCaps {
-            if
-                let last = dedupedCaps.last,
-                abs(cap - last) <= 2
-            {
-                continue
-            }
-            dedupedCaps.append(cap)
-        }
-        guard dedupedCaps.count >= 2 else {
-            return minimumUnit
-        }
-        // Two thirds of the second-widest display's cap: small enough that several
-        // spacers pack onto the widest display, large enough that narrower displays
-        // drop them. A spacer at or above that cap is dropped on the widest display
-        // too, and a dropped spacer covers nothing.
-        let secondLargest = dedupedCaps[dedupedCaps.count - 2]
-        let target = (secondLargest * 2 / 3 / searchResolution).rounded(.down) * searchResolution
-        return min(max(target, minimumUnit), maximumUnit)
-    }
-
-    /// Computes the search bounds for fill spacers in remaining display space.
-    static func fillBounds(
-        caps: [CGFloat],
-        plan: (divider: CGFloat, spacers: [CGFloat])? = nil
-    ) -> (lower: CGFloat, upper: CGFloat)? {
-        guard !caps.isEmpty else {
-            return nil
-        }
-        let sortedCaps = caps.sorted()
-        var dedupedCaps: [CGFloat] = []
-        for cap in sortedCaps {
-            if
-                let last = dedupedCaps.last,
-                abs(cap - last) <= 2
-            {
-                continue
-            }
-            dedupedCaps.append(cap)
-        }
-        guard let largest = dedupedCaps.last else {
-            return nil
-        }
-
-        let lower: CGFloat
-        if dedupedCaps.count >= 2 {
-            lower = dedupedCaps[dedupedCaps.count - 2] + 1
-        } else {
-            lower = minimumUnit
-        }
-
-        let upper = min(largest, maximumUnit)
-        guard upper >= lower else {
-            return nil
-        }
-        return (lower, upper)
     }
 
     /// Computes the initial probe unit for a screen configuration.

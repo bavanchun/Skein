@@ -33,45 +33,35 @@ enum TestMenuBarLayoutMath {
         expect(MenuBarLayoutMath.nextProbe(honored: 40, dropped: 80) == 56, "nextProbe(honored: 40, dropped: 80) == 56")
         expect(MenuBarLayoutMath.nextProbe(honored: 40, dropped: 72) == nil, "nextProbe(honored: 40, dropped: 72) == nil")
 
-        let (planDiv1, planSp1) = MenuBarLayoutMath.spacerPlan(caps: [280, 588, 1496], spacerLength: 400)
+        let (planDiv1, planSp1) = MenuBarLayoutMath.ladderPlan(caps: [280, 588, 1432], hiddenSlotMin: 40)
         expect(
-            planDiv1 == 264 && planSp1 == [400, 400, 400, 400, 400, 400],
-            "spacerPlan(caps: [280, 588, 1496], spacerLength: 400) gives divider 264 and six spacers of 400"
+            planDiv1 == 264 && planSp1 == [1264, 624, 304, 144, 64, 24],
+            "ladderPlan([280, 588, 1432], hiddenSlotMin: 40) gives (264, [1264, 624, 304, 144, 64, 24])"
         )
 
-        let (planDiv2, planSp2) = MenuBarLayoutMath.spacerPlan(caps: [280], spacerLength: 400)
+        let (planDiv2, planSp2) = MenuBarLayoutMath.ladderPlan(caps: [280, 588, 1432], hiddenSlotMin: 32)
         expect(
-            planDiv2 == 264 && planSp2.isEmpty,
-            "spacerPlan(caps: [280], spacerLength: 400) gives no spacers"
+            planDiv2 == 264 && planSp2 == [1008, 496, 240, 112, 48, 16],
+            "ladderPlan([280, 588, 1432], hiddenSlotMin: 32) gives (264, [1008, 496, 240, 112, 48, 16])"
         )
 
-        let (planDiv3, planSp3) = MenuBarLayoutMath.spacerPlan(caps: [280, 588, 1496], spacerLength: 0)
+        let (planDiv3, planSp3) = MenuBarLayoutMath.ladderPlan(caps: [280, 588], hiddenSlotMin: 40)
         expect(
-            planDiv3 == 264 && planSp3.isEmpty,
-            "spacerPlan(caps: [280, 588, 1496], spacerLength: 0) gives no spacers"
+            planDiv3 == 264 && planSp3 == [624, 304, 144, 64, 24],
+            "caps: [280, 588] drops the 1264 term and leaves five spacers"
         )
 
-        let (planDiv4, _) = MenuBarLayoutMath.spacerPlan(caps: [40], spacerLength: 400)
+        let (planDiv4, planSp4) = MenuBarLayoutMath.ladderPlan(caps: [280], hiddenSlotMin: 40)
         expect(
-            planDiv4 == 40,
-            "spacerPlan(caps: [40], spacerLength: 400).divider == 40"
+            planDiv4 == 264 && planSp4.isEmpty,
+            "caps: [280] gives (264, [])"
         )
 
+        let (planDiv5, planSp5) = MenuBarLayoutMath.ladderPlan(caps: [280, 588, 1432], hiddenSlotMin: 20)
         expect(
-            MenuBarLayoutMath.firstSpacerLength(caps: [280, 588, 1496]) == 384,
-            "firstSpacerLength(caps: [280, 588, 1496]) == 604"
+            planDiv5 == planDiv2 && planSp5 == planSp2,
+            "hiddenSlotMin: 20 clamps to 32"
         )
-
-        expect(
-            MenuBarLayoutMath.firstSpacerLength(caps: [280]) == MenuBarLayoutMath.minimumUnit,
-            "firstSpacerLength(caps: [280]) == minimumUnit"
-        )
-
-        let bounds1 = MenuBarLayoutMath.fillBounds(caps: [280, 588, 1496], plan: (planDiv1, planSp1))
-        expect(bounds1?.lower == 589 && bounds1?.upper == 1496, "fillBounds(caps: [280, 588, 1496]) == (589, 1496)")
-
-        let bounds2 = MenuBarLayoutMath.fillBounds(caps: [1496], plan: (planDiv1, planSp1))
-        expect(bounds2?.lower == 40 && bounds2?.upper == 1496, "fillBounds(caps: [1496]) == (40, 1496)")
 
         expect(MenuBarLayoutMath.summary([.collapsed, .itemsVisible]) == .itemsVisible, "summary([collapsed, itemsVisible]) == itemsVisible")
         expect(MenuBarLayoutMath.summary([.collapsed, .dividerDropped, .itemsVisible]) == .dividerDropped, "summary([collapsed, dividerDropped, itemsVisible]) == dividerDropped")

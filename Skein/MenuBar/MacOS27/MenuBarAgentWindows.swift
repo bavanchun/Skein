@@ -55,11 +55,10 @@ enum MenuBarAgentWindows {
                 var identifier: String?
                 var pid: pid_t?
                 let slotChildren = AXHelpers.children(for: child)
-                if
-                    let firstChild = slotChildren.first,
-                    AXHelpers.role(for: firstChild) == .button
-                {
-                    identifier = AXHelpers.identifier(for: firstChild)
+                if let firstChild = slotChildren.first {
+                    if AXHelpers.role(for: firstChild) == .button {
+                        identifier = AXHelpers.identifier(for: firstChild)
+                    }
                     pid = AXHelpers.processIdentifier(for: firstChild)
                 }
                 slots.append(
