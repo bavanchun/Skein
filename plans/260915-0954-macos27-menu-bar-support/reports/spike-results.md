@@ -148,3 +148,16 @@ Per-display verdict lines from the run with the pinned order:
 - 1800pt notched: divider kept, nothing hidden on the bar, **no spacer honored at all**, yet a visible item lost its unoverflowed slot. The same verdict appeared after the revert, with the spacers back at rest, so the divider alone causes it.
 
 That display already shows an overflow affordance with items beyond it when Skein is not running, so it is full before Skein consumes anything. The safety rule was therefore vetoing a collapse that the system's own overflow handles, which is how the notched display hid correctly in earlier phases. A display that already overflows before the collapse no longer vetoes it; only a display that had room and then lost a visible item does.
+
+## Task 2.12 hardware verification passed (2026-09-16)
+
+Three displays attached: 3008pt main, 1800pt notched, 1080pt. The hidden section held items belonging to running apps.
+
+- **Collapse:** `collapse honored screens=1080+1800+3008 divider=264 ladder=38 spacersOnBar=1`. Every display reported no divider lost, no visible item pushed and no hidden item on the bar. The divider slot was present on all three windows and no hidden-item slot was present anywhere.
+- **Ten app switches:** no probes.
+- **Show:** the hidden items returned to the bar on the main display.
+- **Hide again:** hidden items left the bar again, with no probes and no new search, because the cached lengths were reused.
+- **Normal quit and relaunch:** the layout order was unchanged and the collapse was honored again.
+- **Forced kill while collapsed, then relaunch:** the layout order was unchanged and the collapse was honored again.
+- **Layout order throughout:** the divider stayed at its own distance, the six spacers sat immediately above it, and the five-key hidden block sat above those.
+- **Not exercised:** `collapse block repaired` never appeared, because the order never drifted, so the launch repair path has no hardware evidence yet.

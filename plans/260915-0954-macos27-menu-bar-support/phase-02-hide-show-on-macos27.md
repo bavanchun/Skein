@@ -492,6 +492,16 @@ Counsel: `plans/reports/kongming-260916-1040-macos27-main-display-hiding.md`. It
 
 Raising the spacer budget from six to eight would quadruple the covered range and remove the incomplete case for any display width in existence. It is proposed, not decided.
 
+## Task 2.12 result (2026-09-16)
+
+Passed on the three-display configuration with a hidden section containing running apps' items. Evidence and counts are in `reports/spike-results.md` under "Task 2.12 hardware verification passed". Collapse, ten app switches, show, hide again, a normal quit and relaunch, and a forced kill and relaunch all behaved as specified, and the layout order never changed.
+
+Still open, to be recorded in the pull request rather than blocking it:
+
+- The launch repair path has no hardware evidence, because the order never drifted far enough to need it.
+- The single-display configurations and the hot-plug case need the maintainer to detach displays.
+- Raising the spacer budget from six to eight is proposed, not decided.
+
 ## Tasks
 
 ### Task 2.1 — Defaults keys
