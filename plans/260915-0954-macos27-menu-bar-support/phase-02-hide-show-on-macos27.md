@@ -432,6 +432,66 @@ This supersedes `ladderLengths` from Revisions 3 and 4. Everything else stands.
 - When the widest display still reports `itemsVisible` after the spacer search and the fill phase, log `collapse incomplete screens=<key> display=<w>` as today, and do not log `collapse honored`.
 - The Debug "Dump Item Cache" action also logs `diag collapse spacers=<n> length=<l>`, so a hardware run can show what was applied without reading the table.
 
+## Revision 7: pin the order, then one ladder (2026-09-16)
+
+Counsel: `plans/reports/kongming-260916-1040-macos27-main-display-hiding.md`. It supersedes Revision 6's `spacerPlan`, `firstSpacerLength`, the spacer search and the fill phase, and amends the anchor and the leak guard. Everything else stands.
+
+### What the hardware runs actually showed
+
+- The anchored hidden items never got a slot on the main display in any of the three attempts, so the anchor already hides them there.
+- The 38pt icon that stayed visible was not a hidden item. The coordinator's tie-break write at 02:13 put that app's key right of the divider, which makes it a visible-section item, and items packed before Skein's own items can never be pushed by them.
+- The divider lost its slot because its key sits above the spacer keys, so it packs after every spacer. That is packing order, not spacer size.
+- Free width on a display changes with the frontmost app, so a spacer set must cover a range of widths rather than match one measurement.
+
+### Task R18: pinned order in the anchor write
+
+- Required order, right to left: visible items, the collapsing divider, that divider's spacers largest first, then the hidden block.
+- `anchorBlock` rewrites the whole region above the collapsing divider on every anchor write, rather than only keys below 8192:
+  - `base = max(8192, floor(dividerDistance) + 8)`;
+  - spacer `i` gets `base + 8 * i`, largest spacer first;
+  - block entry of rank `r` gets `base + 48 + 8 * r`, in snapshot order.
+  - Idempotent writes return `noChange`, so a repeated anchor costs nothing.
+- `snapshotHiddenBlock` excludes Skein's own `*Spacer*` keys from the block, and also records, per display, the process identifiers of the visible items and the leftmost hidden slot width.
+- When the always-hidden section collapses too, everything above the collapsing divider, including its own divider, spacers and items, is re-ranked after the collapsing divider's spacers.
+
+### Task R19: the ladder
+
+- Replace `spacerPlan`, `firstSpacerLength` and `fillBounds` with `ladderPlan(caps: [CGFloat], hiddenSlotMin: CGFloat) -> (divider: CGFloat, spacers: [CGFloat])`:
+  - the divider is computed as today;
+  - `tMin = clamp(hiddenSlotMin, 32, 48)`;
+  - spacers, largest first, are `tMin * 2^k - slotPadding` for `k` from 5 down to 0;
+  - drop any term whose slot exceeds the widest cap plus `slotPadding`.
+- A descending binary ladder leaves a remainder smaller than the narrowest hidden slot for any free width below `64 * tMin`, so no search and no re-probing on app switches is needed.
+- Tests:
+  - `ladderPlan(caps: [280, 588, 1432], hiddenSlotMin: 40)` gives `(264, [1264, 624, 304, 144, 64, 24])`;
+  - `hiddenSlotMin: 32` gives `(264, [1008, 496, 240, 112, 48, 16])`;
+  - `caps: [280, 588]` drops the 1264 term and leaves five spacers;
+  - `caps: [280]` gives `(264, [])`;
+  - `hiddenSlotMin: 20` clamps to 32.
+
+### Task R20: one apply, one verdict
+
+- Delete `searchSpacers` and `fill`. After the divider search, apply the ladder once and judge it.
+- Inputs: `pre`, observed in `prepareForCollapse` before any length change, and `post`, two observations 200 ms apart after the apply and the settle delay, which must agree. When they disagree, retry once, then keep the lengths and log `collapse verdict unknown`.
+- Per display:
+  - `dividerLost` when the divider had a slot in `pre` and has none in `post`; a divider inside an overflow pile is not lost;
+  - `visiblePushed` when a process that had a visible on-bar slot in `pre` has no unoverflowed slot in `post`;
+  - `hiddenOnBar` counts unoverflowed `post` slots whose process is in the hidden set.
+- Verdicts:
+  - every display safe and no hidden item on the bar: log `collapse honored screens=<key> divider=<d> ladder=<tMin> spacersOnBar=<n>`;
+  - safe but some hidden items remain: keep the lengths and log `collapse incomplete screens=<key> display=<w> hiddenOnBar=<n> remainder=<pt>` once per configuration key;
+  - not safe: set the spacers back to rest, settle and judge again; if it is still not safe, refuse through the existing refusal callback and log `collapse refused reason=dividerLost|visiblePushed display=<w>`.
+- Nothing unsafe is ever left applied, so there is no loop that can end in a bad state. The divider search keeps its own rule, and `check` re-searches only when a divider is lost.
+
+### Task R21: identity on every display
+
+- `MenuBarAgentWindows.observe` reads the process identifier of each slot's nested child on every window, not only where that child is a button. Only the identifier stays button-only.
+- `isOurs` in `state` and in `leakedProcessIdentifiers` matches by process identifier first and falls back to width. Without this a 40pt ladder term is indistinguishable from a 40pt hidden item on two of the three windows.
+
+### Open maintainer question
+
+Raising the spacer budget from six to eight would quadruple the covered range and remove the incomplete case for any display width in existence. It is proposed, not decided.
+
 ## Tasks
 
 ### Task 2.1 — Defaults keys

@@ -112,3 +112,12 @@ Skein Dev with the anchor, three displays. Divider caps found by the search: 280
 - Hand measurements with unkeyed test items suggested 400 was safe, but Skein's spacers are keyed immediately right of the divider while test items land leftmost, so the two pack differently.
 - Both secondary displays hide correctly in every run: their captures show the « affordance and no hidden icons. The failure is specific to the main display, which has no notch.
 - The anchor stayed correct throughout: the hidden set and the layout order were unchanged across all runs, quits and relaunches.
+
+## The icon that looked unhidden (2026-09-16)
+
+The 38pt icon that stayed visible on the main display in all three spacer attempts was not a hidden-section item. The coordinator's tie-break write at 02:13 placed that app's key at 433.5, right of `HItem` at 445.5, which makes it a visible-section item by table order. Items packed before Skein's own items cannot be pushed by them.
+
+- The four anchored keys never got a slot on the main display in any run, so the anchor did hide them.
+- The divider was dropped because its key sits above the spacer keys, so it packs after every spacer. That is packing order, not spacer size.
+- Correct order, right to left: visible items, the divider, the divider's spacers largest first, then the hidden block.
+- Placement stops at the first item that does not fit the remaining space, while an item wider than the display's cap is skipped and the next one is still placed. Test items of 1200, 1200, 40 and 40, created in that order: the main display listed one 1216 slot and neither 56 slot, while both narrower displays skipped the 1216 terms and listed both 56 slots. So one spacer that does not fit also keeps everything further left off the bar, which is what makes a descending ladder reliable.
