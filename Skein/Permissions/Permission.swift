@@ -139,12 +139,20 @@ final class AccessibilityPermission: Permission {
 
 final class ScreenRecordingPermission: Permission {
     init() {
-        super.init(
-            title: "Screen Recording",
-            details: [
+        let details = if MenuBarPlatform.usesMenuBarAgent {
+            [
+                "Display images of menu bar items.",
+                "Required for Menu Bar Layout, search and Skein Bar images on macOS 27.",
+            ]
+        } else {
+            [
                 "Edit the menu bar's appearance.",
                 "Display images of individual menu bar items.",
-            ],
+            ]
+        }
+        super.init(
+            title: "Screen Recording",
+            details: details,
             isRequired: false,
             settingsURL: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"),
             check: {
