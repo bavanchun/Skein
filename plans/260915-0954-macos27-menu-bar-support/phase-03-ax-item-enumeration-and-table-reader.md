@@ -134,6 +134,24 @@ On macOS 27, every consumer of `MenuBarItem.getMenuBarItems` receives Accessibil
 - Commit: `feat(menu-bar): enumerate menu bar items through Accessibility on macOS 27`.
 - Verify: Release build succeeds AND `gh pr checks --watch --required` exits 0.
 
+## Task 3.6 / 3.7 result
+
+Verified on hardware (three displays, Skein Dev build):
+
+- `ax cache visible=19 hidden=3 alwaysHidden=0`
+- `diag cache visible=19 hidden=3 alwaysHidden=0 grouped=2`
+- `diag table hiddenKeys=12`
+- `grep -c "Missing control item"` printed `0`
+- `grep -c "sync getMenuBarItems off main"` printed `0` after the three task 3.7 checks
+
+The `hiddenKeys=12` / `hidden=3` gap is fully accounted for: 7 of the 12 keys are
+Skein's own spacer keys and are excluded by the `Spacer` title rule, leaving 5
+third-party keys. One belongs to an application that is not running. Of the
+remaining 4, three currently publish a menu bar item and one runs without
+publishing one, so the cache reports 3. A table key is a stored preference, not
+evidence that its owner shows an item today; the cache deliberately lists only
+items that exist right now.
+
 ## Test scenario matrix
 
 | Priority | Scenario | Expected |
