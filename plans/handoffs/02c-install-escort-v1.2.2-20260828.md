@@ -143,8 +143,16 @@ Use only if Path A fails, and say that it failed first.
 
 Skein is signed with an Apple Development (Personal Team) certificate and is
 **not notarized**, so a manually-downloaded copy trips Gatekeeper on first
-open. A Sparkle-delivered update does not — Sparkle validates the EdDSA
-signature itself, which is the other reason to prefer Path A.
+open. A Sparkle-delivered update does not reach Gatekeeper the same way —
+Sparkle validates the EdDSA signature itself.
+
+> **Superseded 2026-09-05.** The sentence above is true — Sparkle does validate
+> the EdDSA signature itself, and that validation is exactly what killed every
+> update. What was wrong is the inference that Path A therefore worked. Every
+> published appcast carried `sparkle:edSignature` as a child of `<item>` rather
+> than as an attribute of `<enclosure>`, the only place Sparkle reads it, so the
+> validation found no signature and rejected the update after downloading it.
+> That is issue #30. Use Path B until the feed is republished.
 
 Two ways through it, both fine:
 

@@ -161,7 +161,10 @@ codesign --force --options runtime --sign "$CERT" "$SPARKLE/XPCServices/Installe
 # 2. Skein's own XPC service (also innermost)
 codesign --force --options runtime --sign "$CERT" "$APP/Contents/XPCServices/MenuBarItemService.xpc"
 
-# 3. Updater.app (nested helper)
+# 3. Sparkle's nested helpers. Autoupdate is a bare Mach-O, not a bundle, and
+#    arrives ad-hoc signed from Sparkle's binary artifact — sign it explicitly or
+#    the shipped app carries a helper with no team identifier.
+codesign --force --options runtime --sign "$CERT" "$SPARKLE/Autoupdate"
 codesign --force --options runtime --sign "$CERT" "$SPARKLE/Updater.app"
 
 # 4. Sparkle.framework itself
@@ -175,6 +178,14 @@ codesign --force --options runtime \
 # Verify
 codesign --verify --verbose=4 "$APP"
 codesign -dv --verbose=4 "$APP"
+
+# No nested binary may still be ad-hoc: every hit must name the Apple Development
+# identity, not "Signature=adhoc".
+for b in "$SPARKLE/Autoupdate" "$SPARKLE/Updater.app" \
+         "$SPARKLE/XPCServices/Downloader.xpc" "$SPARKLE/XPCServices/Installer.xpc" \
+         "$APP/Contents/XPCServices/MenuBarItemService.xpc"; do
+  echo "== $b"; codesign -dv "$b" 2>&1 | grep -E "Signature|TeamIdentifier"
+done
 ```
 
 Expected: `Authority=Apple Development: <apple-id> (<TEAM_ID>)` chained to WWDR + Apple Root CA, `flags=0x10000(runtime)` (Hardened Runtime), `Identifier=com.ariadnev.Skein`. `codesign --verify` must print `valid on disk` + `satisfies its Designated Requirement`.
@@ -243,7 +254,12 @@ hdiutil detach "/Volumes/Skein <version>"
 
 ### Step 5 — Write `appcast.xml`
 
-Drop the signature + length from Step 4 into the enclosure:
+`sign_update` prints the pair ready to paste — `sparkle:edSignature="…"
+length="…"`. Both are **attributes of `<enclosure>`**. Sparkle reads the
+signature from the enclosure's attributes and nowhere else, so a
+`<sparkle:edSignature>` element written as a child of `<item>` is silently
+ignored and the update is rejected at install time with *"The app has an EdDSA
+public key, but there is no EdDSA signature in the update"*.
 
 ```xml
 <?xml version="1.0" standalone="yes"?>
@@ -258,10 +274,10 @@ Drop the signature + length from Step 4 into the enclosure:
       <pubDate>Mon, 27 Jul 2026 00:00:00 +0000</pubDate>
       <sparkle:version>${BUILD}</sparkle:version>
       <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
-      <sparkle:edSignature>INSERT_SIGNATURE_HERE</sparkle:edSignature>
       <enclosure
         url="https://github.com/bavanchun/Skein/releases/download/v${VERSION}/Skein-${VERSION}.zip"
         sparkle:os="macos"
+        sparkle:edSignature="INSERT_SIGNATURE_HERE"
         length="INSERT_LENGTH_HERE"
         type="application/octet-stream"/>
     </item>
@@ -348,10 +364,10 @@ If missing, regenerate through Xcode Accounts → team → "Manage Certificates"
 - [ ] Bump `MARKETING_VERSION` + `CURRENT_PROJECT_VERSION` in `Skein.xcodeproj/project.pbxproj` (Debug + Release)
 - [ ] Commit changes on `main`
 - [ ] `xcodebuild build` (unsigned) → `.release-output/sign/Skein.app`
-- [ ] `codesign` inside-out (Sparkle's XPC services → `Contents/XPCServices/MenuBarItemService.xpc` → Updater.app → Sparkle.framework → main app)
-- [ ] `codesign --verify --verbose=4` confirms "valid on disk"
+- [ ] `codesign` inside-out (Sparkle's XPC services → `Contents/XPCServices/MenuBarItemService.xpc` → Autoupdate → Updater.app → Sparkle.framework → main app)
+- [ ] `codesign --verify --verbose=4` confirms "valid on disk"; no nested binary reports `Signature=adhoc`
 - [ ] `ditto` zip + `sign_update` for EdDSA signature
-- [ ] Update `appcast.xml` (append `<item>`, bump `pubDate`)
+- [ ] Update `appcast.xml` (append `<item>`, bump `pubDate`) with `sparkle:edSignature` as an **enclosure attribute**
 - [ ] `git tag -s v<x.y.z>` (SSH-signed) + `git push origin v<x.y.z>`
 - [ ] `gh release create v<x.y.z> Skein-<x.y.z>.zip appcast.xml`
 - [ ] Verify `curl -s https://skein.ariadnev.com/appcast.xml` returns the new appcast
@@ -360,6 +376,26 @@ If missing, regenerate through Xcode Accounts → team → "Manage Certificates"
 
 ## Pitfalls
 
+- **`sparkle:edSignature` goes on the `<enclosure>`, never inside `<item>`.**
+  Sparkle reads it from the enclosure's attribute dictionary only. Put it
+  anywhere else and the feed still parses, the update still downloads, extracts
+  and starts installing — then dies at validation with *"there is no EdDSA
+  signature in the update, so the update will be rejected."* Gate the file
+  before uploading it, and gate the live feed afterwards. The check must be
+  XML-aware: the template above writes `<enclosure` across several lines, so a
+  line-based `grep` reports zero hits on a perfectly correct feed.
+  ```bash
+  gate() {  # every item signed on the enclosure, none inside <item>
+    local f=$1
+    echo "enclosure attrs: $(xmllint --xpath 'count(//item/enclosure/@*[local-name()="edSignature"])' "$f")"
+    echo "item children:   $(xmllint --xpath 'count(//item/*[local-name()="edSignature"])' "$f")"
+    echo "items:           $(xmllint --xpath 'count(//item)' "$f")"
+  }
+  gate appcast.xml                     # before: attrs == items, children == 0
+  curl -s https://skein.ariadnev.com/appcast.xml -o /tmp/live.xml && gate /tmp/live.xml
+  ```
+  The Worker caches the feed for 300 s (`infra/appcast-worker/index.js`), so
+  wait out that window before believing a live-feed result.
 - **Appcast must be on the latest release.** GitHub's `releases/latest/download/<file>` only resolves assets on the most recent published release.
 - **Bundle ID conflict.** If upstream `com.jordanbaird.Ice` is also installed, both apps share UserDefaults + keychain. Fork uses `com.ariadnev.Skein` to avoid this — do not revert.
 - **Private key safety.** `~/.config/skein/sparkle-private-ed25519-key` is the only offline backup of the Sparkle signing key. If lost, all future updates require shipping a new `SUPublicEDKey` (forces a manual reinstall, breaking auto-update).

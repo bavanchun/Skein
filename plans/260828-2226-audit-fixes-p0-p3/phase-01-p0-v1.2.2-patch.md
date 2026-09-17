@@ -89,7 +89,7 @@ Four surgical edits + one asset update:
 ## Success Criteria
 
 - [x] PR opened, CI green, PM verification checklist all boxes ticked.
-- [ ] After PM merge and tag: v1.2.2 tag on `main`, GitHub release published with ZIP + DMG, appcast rolled forward, Sparkle self-update from 1.2.1 → 1.2.2 works on a real Mac. — tag, release (ZIP+DMG) and appcast done and byte-verified; self-update on a real Mac pending maintainer.
+- [ ] After PM merge and tag: v1.2.2 tag on `main`, GitHub release published with ZIP + DMG, appcast rolled forward, Sparkle self-update from 1.2.1 → 1.2.2 works on a real Mac. — tag, release (ZIP+DMG) and appcast done and byte-verified; self-update tested on hardware 2026-09-05 and **fails**: the appcast placed `sparkle:edSignature` inside `<item>` rather than on `<enclosure>`, so Sparkle rejected the download at validation. Tracked as issue #30. Byte-length matching was verified all along; signature placement never was. The feed was republished with the signatures on the enclosures on 2026-09-05 and the live gate passes; the box stays open until a self-update is re-run on hardware against it.
 - [x] `plans/reports/scout-260828-2201-security-quality.md` HIGH-01, HIGH-02, HIGH-03 items marked resolved with PR link.
 
 ## Risk Assessment
